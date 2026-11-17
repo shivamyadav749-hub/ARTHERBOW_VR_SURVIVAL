@@ -1,0 +1,141 @@
+import { ArmorGearItem } from '../types/archery';
+
+export const ANCIENT_ARMOR_ITEMS: ArmorGearItem[] = [
+  {
+    id: 'armor-recruit-leather',
+    slot: 'armor',
+    name: 'Scout Tunic & Leather',
+    eraLabel: 'Default Issue',
+    description: 'Lightweight cured leather jerkin worn by frontier archers.',
+    costCoins: 0,
+    bonusMaxHp: 0,
+    damageReductionPct: 0,
+    primaryHex: '#78350F',
+    trimHex: '#94A3B8',
+  },
+  {
+    id: 'armor-bronze-linothorax',
+    slot: 'armor',
+    name: 'Hoplite Bronze Cuirass',
+    eraLabel: 'Hellenic Era',
+    description: 'Molded bronze breastplate etched with sacred laurel borders.',
+    costCoins: 180,
+    bonusMaxHp: 25,
+    damageReductionPct: 10,
+    primaryHex: '#B45309',
+    trimHex: '#FBBF24',
+  },
+  {
+    id: 'armor-spartan-scale',
+    slot: 'armor',
+    name: 'Ironclad Scale Lamellar',
+    eraLabel: 'Phalanx Guard',
+    description: 'Overlapping tempered iron scales that absorb javelin thrusts.',
+    costCoins: 420,
+    bonusMaxHp: 55,
+    damageReductionPct: 18,
+    primaryHex: '#475569',
+    trimHex: '#38BDF8',
+  },
+  {
+    id: 'armor-obsidian-centurion',
+    slot: 'armor',
+    name: 'Obsidian Lorica Segmentata',
+    eraLabel: 'Imperial Legion',
+    description: 'Dark-forged articulated steel plates worn by siege veterans.',
+    costCoins: 780,
+    bonusMaxHp: 90,
+    damageReductionPct: 26,
+    primaryHex: '#1E1B4B',
+    trimHex: '#A855F7',
+  },
+  {
+    id: 'armor-aether-gilded',
+    slot: 'armor',
+    name: 'Sovereign Gilded Aegis',
+    eraLabel: 'Grandmaster Relic',
+    description: 'Runic gold-inlaid battleplate granting unmatched survivability.',
+    costCoins: 1300,
+    bonusMaxHp: 140,
+    damageReductionPct: 34,
+    primaryHex: '#92400E',
+    trimHex: '#FDE047',
+  },
+];
+
+export const ANCIENT_HELMET_ITEMS: ArmorGearItem[] = [
+  {
+    id: 'helm-leather-hood',
+    slot: 'helmet',
+    name: 'Ranger Leather Hood',
+    eraLabel: 'Default Issue',
+    description: 'Supple hooded cowl offering unobstructed peripheral bow sight.',
+    costCoins: 0,
+    bonusMaxHp: 0,
+    damageReductionPct: 0,
+    primaryHex: '#57534E',
+    trimHex: '#CBD5E1',
+  },
+  {
+    id: 'helm-corinthian-bronze',
+    slot: 'helmet',
+    name: 'Corinthian Plumed Helm',
+    eraLabel: 'Hellenic Era',
+    description: 'Cast bronze cheek-guard helm topped with a crimson horsehair crest.',
+    costCoins: 140,
+    bonusMaxHp: 15,
+    damageReductionPct: 6,
+    primaryHex: '#D97706',
+    trimHex: '#EF4444',
+  },
+  {
+    id: 'helm-galea-iron',
+    slot: 'helmet',
+    name: 'Legionnaire Galea',
+    eraLabel: 'Imperial Guard',
+    description: 'Reinforced iron brow-plate guarding against incoming javelins.',
+    costCoins: 340,
+    bonusMaxHp: 35,
+    damageReductionPct: 10,
+    primaryHex: '#64748B',
+    trimHex: '#38BDF8',
+  },
+  {
+    id: 'helm-shadow-wolf',
+    slot: 'helmet',
+    name: 'Nocturne Wolf Visor',
+    eraLabel: 'Alpine Vanguard',
+    description: 'Obsidian war mask forged for high-altitude gale skirmishes.',
+    costCoins: 650,
+    bonusMaxHp: 60,
+    damageReductionPct: 15,
+    primaryHex: '#312E81',
+    trimHex: '#22D3EE',
+  },
+  {
+    id: 'helm-solar-crown',
+    slot: 'helmet',
+    name: 'Solaris Laureate Helm',
+    eraLabel: 'Grandmaster Relic',
+    description: 'Sun-forged crested crown of the undefeated Eclipse Champion.',
+    costCoins: 1100,
+    bonusMaxHp: 90,
+    damageReductionPct: 20,
+    primaryHex: '#CA8A04',
+    trimHex: '#FEF08A',
+  },
+];
+
+export function computePlayerDefenseStats(armorId: string, helmetId: string) {
+  const armor =
+    ANCIENT_ARMOR_ITEMS.find((a) => a.id === armorId) || ANCIENT_ARMOR_ITEMS[0];
+  const helmet =
+    ANCIENT_HELMET_ITEMS.find((h) => h.id === helmetId) || ANCIENT_HELMET_ITEMS[0];
+
+  return {
+    armor,
+    helmet,
+    maxHp: 100 + armor.bonusMaxHp + helmet.bonusMaxHp,
+    damageReductionPct: Math.min(60, armor.damageReductionPct + helmet.damageReductionPct),
+  };
+}
