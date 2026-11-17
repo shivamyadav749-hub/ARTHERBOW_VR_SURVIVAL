@@ -1364,9 +1364,10 @@ namespace MetaQuestArchery
     fileName: 'ArmoredEnemyAI.cs',
     className: 'ArmoredEnemyAI : MonoBehaviour',
     roleSummary:
-      'NavMesh & state-machine AI for shielded hoplites, javelineers, and centurions supporting melee charging, ranged projectile volleys, shield guard windows, stagger, and Cryo slow.',
+      'NavMesh & state-machine AI for shielded hoplites, javelineers, and centurions supporting melee charging, ranged projectile volleys, safety-wall breach flanking, shield guard windows, stagger, and Cryo slow.',
     keyHighlights: [
-      'Switches cleanly between Advancing, ChargingMelee, RangedWindup, Attacking, Staggered, and Defeated states',
+      'Checks line-of-sight against safety wall/bastion cover layers so melee units flank through doorways instead of swinging through walls',
+      'Flushes players hiding or camping inside the safety wall by collapsing ranged stop distance after CoverFlushDelay and rushing inside',
       'Lowers left-hand bronze/steel shield slightly during melee windups to reward skilled counter-headshots',
       'Applies Cryo time-dilation multiplier cleanly to NavMeshAgent speed, Animator speed, and attack cooldowns',
     ],
@@ -1389,9 +1390,13 @@ namespace MetaQuestArchery
         [SerializeField] private float attackDamage = 14f;
         [SerializeField] private float attackCooldown = 2.2f;
 
-        [Header("Engagement Ranges")]
-        [SerializeField] private float meleeStopDistance = 4.2f;
+        [Header("Engagement & Safety-Wall Breach Ranges")]
+        [SerializeField] private float meleeStopDistance = 1.65f;
         [SerializeField] private float rangedStopDistance = 19.5f;
+        [SerializeField] private float breachStopDistance = 3.2f;
+        [SerializeField] private float coverFlushDelay = 2.0f;
+        [SerializeField] private float safetyWallZThreshold = -3.45f;
+        [SerializeField] private LayerMask coverObstacleMask;
         [SerializeField] private float shieldDropDuringSwing = 0.55f;
 
         [Header("References")]
@@ -1410,6 +1415,7 @@ namespace MetaQuestArchery
         private float _attackTimer;
         private float _staggerTimer;
         private float _cryoTimer;
+        private float _coverHiddenTimer;
         private float _timeScale = 1f;
 
         public float HealthRatio => Mathf.Clamp01(_currentHp / Mathf.Max(1f, maxHealth));
@@ -1443,22 +1449,47 @@ namespace MetaQuestArchery
             }
 
             float distToPlayer = Vector3.Distance(transform.position, _playerTarget.position);
+            bool clearLos = HasClearLineOfSight(distToPlayer);
+            bool playerInsideSafetyWall = _playerTarget.position.z > safetyWallZThreshold;
+
+            if (!clearLos)
+            {
+                _coverHiddenTimer = Mathf.Min(8f, _coverHiddenTimer + dt);
+            }
+            else if (playerInsideSafetyWall)
+            {
+                _coverHiddenTimer = Mathf.Min(8f, _coverHiddenTimer + dt * 0.45f);
+            }
+            else
+            {
+                _coverHiddenTimer = Mathf.Max(0f, _coverHiddenTimer - dt * 0.6f);
+            }
+
             Vector3 lookPos = new Vector3(_playerTarget.position.x, transform.position.y, _playerTarget.position.z);
             transform.LookAt(lookPos);
 
             if (enemyClass == EnemyClass.Javelineer)
             {
-                UpdateRangedJavelineer(distToPlayer, dt);
+                UpdateRangedJavelineer(distToPlayer, clearLos, dt);
             }
             else
             {
-                UpdateMeleeCharger(distToPlayer, dt);
+                UpdateMeleeCharger(distToPlayer, clearLos, dt);
             }
         }
 
-        private void UpdateMeleeCharger(float dist, float dt)
+        private bool HasClearLineOfSight(float distToPlayer)
         {
-            if (dist > meleeStopDistance)
+            if (distToPlayer <= 0.8f || coverObstacleMask.value == 0) return true;
+            Vector3 eye = transform.position + Vector3.up * 1.45f;
+            Vector3 dir = (_playerTarget.position - eye).normalized;
+            return !Physics.Raycast(eye, dir, distToPlayer - 0.25f, coverObstacleMask, QueryTriggerInteraction.Ignore);
+        }
+
+        private void UpdateMeleeCharger(float dist, bool clearLos, float dt)
+        {
+            // Never stop outside a safety wall to swing through cover: route inside around doorways first
+            if (dist > meleeStopDistance || !clearLos)
             {
                 bool isCharging = dist < 13f;
                 _state = isCharging ? EnemyState.ChargingMelee : EnemyState.Advancing;
@@ -1485,18 +1516,24 @@ namespace MetaQuestArchery
             }
         }
 
-        private void UpdateRangedJavelineer(float dist, float dt)
+        private void UpdateRangedJavelineer(float dist, bool clearLos, float dt)
         {
-            if (dist > rangedStopDistance)
+            // If the player hides behind cover or stays inside the safety wall too long, breach inward
+            float flushBlend = Mathf.Clamp01((_coverHiddenTimer - coverFlushDelay) / 3.2f);
+            float activeStopDistance = Mathf.Lerp(rangedStopDistance, breachStopDistance, flushBlend);
+
+            if (dist > activeStopDistance || (!clearLos && _coverHiddenTimer >= coverFlushDelay))
             {
                 _agent.isStopped = false;
-                _agent.speed = walkSpeed * _timeScale;
+                _agent.speed = walkSpeed * (flushBlend > 0.05f ? 1.18f : 1f) * _timeScale;
                 _agent.SetDestination(_playerTarget.position);
                 _state = EnemyState.Advancing;
             }
             else
             {
                 _agent.isStopped = true;
+                if (!clearLos) return;
+
                 _attackTimer -= dt;
 
                 if (_attackTimer <= 0.75f && _state != EnemyState.RangedWindup)
@@ -4445,6 +4482,686 @@ namespace MetaQuestArchery
 
             ps.Play();
             Destroy(go, 1.2f);
+        }
+    }
+}`,
+  },
+  {
+    id: 'enemy-pathfinding',
+    fileName: 'EnemyPathfinding.cs',
+    className: 'EnemyPathfinding : MonoBehaviour',
+    roleSummary:
+      'NavMesh waypoint pathfinder with a Moving, Attacking, and Fleeing state machine driven by player proximity to the safety wall and enemy health thresholds.',
+    keyHighlights: [
+      'Navigates pre-defined Transform[] waypoint routes via NavMeshAgent with Loop, PingPong, and Clamp traversal modes',
+      'Evaluates player distance to the safety wall center/threshold to transition dynamically between Moving, Attacking, and Fleeing',
+      'Validates NavMesh flee targets using NavMesh.SamplePosition away from the safety wall and player before resuming patrol',
+    ],
+    code: `using System;
+using UnityEngine;
+using UnityEngine.AI;
+
+namespace MetaQuestArchery
+{
+    [RequireComponent(typeof(NavMeshAgent))]
+    public class EnemyPathfinding : MonoBehaviour
+    {
+        public enum PathfindingState
+        {
+            Moving,
+            Attacking,
+            Fleeing
+        }
+
+        public enum RouteTraversalMode
+        {
+            Loop,
+            PingPong,
+            StopAtEnd
+        }
+
+        [Header("NavMesh Waypoint Path")]
+        [SerializeField] private Transform[] waypoints;
+        [SerializeField] private RouteTraversalMode traversalMode = RouteTraversalMode.Loop;
+        [SerializeField] private float waypointTolerance = 0.85f;
+        [SerializeField] private float patrolSpeed = 2.4f;
+        [SerializeField] private float chaseSpeed = 3.8f;
+        [SerializeField] private float fleeSpeed = 4.6f;
+
+        [Header("Safety Wall & Proximity Rules")]
+        [Tooltip("Center Transform of the player's safety wall fortification.")]
+        [SerializeField] private Transform safetyWallAnchor;
+        [Tooltip("Fallback world Z threshold used if no safetyWallAnchor Transform is assigned.")]
+        [SerializeField] private float safetyWallZThreshold = -3.45f;
+        [Tooltip("Player within this distance of the safety wall counts as 'inside/at safety wall'.")]
+        [SerializeField] private float playerSafetyWallProximity = 4.5f;
+        [Tooltip("Max distance from NPC to detect and engage the player.")]
+        [SerializeField] private float aggroRange = 18.0f;
+        [SerializeField] private float attackRange = 2.1f;
+
+        [Header("Fleeing & Retreat Parameters")]
+        [Tooltip("Switch to Fleeing when player is entrenched at the safety wall and NPC HP drops below this ratio.")]
+        [Range(0.05f, 1f)]
+        [SerializeField] private float fleeHealthRatio = 0.35f;
+        [Tooltip("If enabled, unit breaks off and flees immediately whenever the player reaches the safety wall zone.")]
+        [SerializeField] private bool fleeWheneverPlayerAtSafetyWall = false;
+        [SerializeField] private float fleeDistance = 12.0f;
+        [SerializeField] private float safeRecoverDistance = 22.0f;
+        [SerializeField] private Transform retreatBeacon;
+
+        [Header("Combat & References")]
+        [SerializeField] private Transform playerTarget;
+        [SerializeField] private PlayerHealthDiegeticUI playerHealth;
+        [SerializeField] private float attackDamage = 12f;
+        [SerializeField] private float attackCooldown = 1.8f;
+        [SerializeField] private float maxHealth = 120f;
+        [SerializeField] private Animator animator;
+
+        private NavMeshAgent _agent;
+        private PathfindingState _currentState = PathfindingState.Moving;
+        private int _waypointIndex;
+        private int _pingPongDirection = 1;
+        private float _attackTimer;
+        private float _currentHp;
+        private float _repathTimer;
+        private Vector3 _activeFleeDestination;
+
+        public PathfindingState CurrentState => _currentState;
+        public event Action<PathfindingState, PathfindingState> OnStateChanged;
+
+        private void Awake()
+        {
+            _agent = GetComponent<NavMeshAgent>();
+            _currentHp = maxHealth;
+
+            if (playerTarget == null && Camera.main != null)
+            {
+                playerTarget = Camera.main.transform;
+            }
+        }
+
+        private void Start()
+        {
+            TransitionTo(PathfindingState.Moving);
+            AssignCurrentWaypointDestination();
+        }
+
+        private void Update()
+        {
+            if (!_agent.isOnNavMesh || playerTarget == null) return;
+
+            EvaluateStateTransitions();
+
+            switch (_currentState)
+            {
+                case PathfindingState.Moving:
+                    TickMovingState();
+                    break;
+                case PathfindingState.Attacking:
+                    TickAttackingState();
+                    break;
+                case PathfindingState.Fleeing:
+                    TickFleeingState();
+                    break;
+            }
+        }
+
+        private void EvaluateStateTransitions()
+        {
+            float distToPlayer = Vector3.Distance(transform.position, playerTarget.position);
+            bool playerNearSafetyWall = IsPlayerNearSafetyWall();
+            bool lowHealth = (_currentHp / Mathf.Max(1f, maxHealth)) <= fleeHealthRatio;
+
+            // Fleeing triggers when player leverages the safety wall (either directly configured or combined with low HP)
+            bool shouldFlee = playerNearSafetyWall && (fleeWheneverPlayerAtSafetyWall || lowHealth);
+
+            if (_currentState == PathfindingState.Fleeing)
+            {
+                if (!playerNearSafetyWall && !lowHealth && distToPlayer >= safeRecoverDistance)
+                {
+                    TransitionTo(PathfindingState.Moving);
+                }
+                return;
+            }
+
+            if (shouldFlee && distToPlayer <= safeRecoverDistance)
+            {
+                TransitionTo(PathfindingState.Fleeing);
+                return;
+            }
+
+            if (_currentState == PathfindingState.Moving)
+            {
+                // Attacking engages when player steps into aggro range (and is vulnerable / outside wall breach threshold)
+                if (distToPlayer <= aggroRange)
+                {
+                    TransitionTo(PathfindingState.Attacking);
+                }
+            }
+            else if (_currentState == PathfindingState.Attacking)
+            {
+                if (distToPlayer > aggroRange * 1.25f)
+                {
+                    TransitionTo(PathfindingState.Moving);
+                }
+            }
+        }
+
+        private bool IsPlayerNearSafetyWall()
+        {
+            if (playerTarget == null) return false;
+
+            if (safetyWallAnchor != null)
+            {
+                float distToWall = Vector3.Distance(playerTarget.position, safetyWallAnchor.position);
+                return distToWall <= playerSafetyWallProximity;
+            }
+
+            // Fallback check using arena Z safety-wall boundary
+            return playerTarget.position.z >= safetyWallZThreshold;
+        }
+
+        private void TransitionTo(PathfindingState nextState)
+        {
+            if (_currentState == nextState && Application.isPlaying && _agent != null)
+            {
+                // Allow initial Start() setup
+            }
+
+            PathfindingState prev = _currentState;
+            _currentState = nextState;
+
+            switch (nextState)
+            {
+                case PathfindingState.Moving:
+                    _agent.isStopped = false;
+                    _agent.speed = patrolSpeed;
+                    _agent.stoppingDistance = Mathf.Max(0.15f, waypointTolerance * 0.5f);
+                    AssignCurrentWaypointDestination();
+                    animator?.SetBool("IsMoving", true);
+                    animator?.SetBool("IsFleeing", false);
+                    break;
+
+                case PathfindingState.Attacking:
+                    _agent.isStopped = false;
+                    _agent.speed = chaseSpeed;
+                    _agent.stoppingDistance = attackRange * 0.85f;
+                    _attackTimer = Mathf.Min(_attackTimer, 0.35f);
+                    animator?.SetBool("IsMoving", true);
+                    animator?.SetBool("IsFleeing", false);
+                    break;
+
+                case PathfindingState.Fleeing:
+                    _agent.isStopped = false;
+                    _agent.speed = fleeSpeed;
+                    _agent.stoppingDistance = 0.4f;
+                    _repathTimer = 0f;
+                    ComputeAndSetFleeDestination();
+                    animator?.SetBool("IsMoving", true);
+                    animator?.SetBool("IsFleeing", true);
+                    break;
+            }
+
+            if (prev != nextState)
+            {
+                OnStateChanged?.Invoke(prev, nextState);
+            }
+        }
+
+        private void TickMovingState()
+        {
+            if (waypoints == null || waypoints.Length == 0) return;
+
+            if (!_agent.pathPending && _agent.remainingDistance <= waypointTolerance)
+            {
+                AdvanceWaypointIndex();
+                AssignCurrentWaypointDestination();
+            }
+        }
+
+        private void TickAttackingState()
+        {
+            float distToPlayer = Vector3.Distance(transform.position, playerTarget.position);
+
+            if (distToPlayer > attackRange)
+            {
+                _agent.isStopped = false;
+                _repathTimer -= Time.deltaTime;
+                if (_repathTimer <= 0f)
+                {
+                    _repathTimer = 0.15f;
+                    _agent.SetDestination(playerTarget.position);
+                }
+            }
+            else
+            {
+                _agent.isStopped = true;
+                FaceTarget(playerTarget.position);
+
+                _attackTimer -= Time.deltaTime;
+                if (_attackTimer <= 0f)
+                {
+                    _attackTimer = attackCooldown;
+                    animator?.SetTrigger("Attack");
+                    playerHealth?.ApplyDamage(attackDamage, $"{gameObject.name} Strike");
+                }
+            }
+        }
+
+        private void TickFleeingState()
+        {
+            _repathTimer -= Time.deltaTime;
+            if (_repathTimer <= 0f || (!_agent.pathPending && _agent.remainingDistance <= 1.1f))
+            {
+                _repathTimer = 0.65f;
+                ComputeAndSetFleeDestination();
+            }
+        }
+
+        private void ComputeAndSetFleeDestination()
+        {
+            if (retreatBeacon != null)
+            {
+                _activeFleeDestination = retreatBeacon.position;
+                _agent.SetDestination(_activeFleeDestination);
+                return;
+            }
+
+            Vector3 threatOrigin = safetyWallAnchor != null ? safetyWallAnchor.position : playerTarget.position;
+            Vector3 awayDir = (transform.position - threatOrigin);
+            awayDir.y = 0f;
+            if (awayDir.sqrMagnitude < 0.01f)
+            {
+                awayDir = -Vector3.forward;
+            }
+
+            Vector3 candidate = transform.position + awayDir.normalized * fleeDistance;
+            if (NavMesh.SamplePosition(candidate, out NavMeshHit hit, 6.0f, NavMesh.AllAreas))
+            {
+                _activeFleeDestination = hit.position;
+                _agent.SetDestination(_activeFleeDestination);
+            }
+        }
+
+        private void AssignCurrentWaypointDestination()
+        {
+            if (waypoints == null || waypoints.Length == 0) return;
+            Transform targetWp = waypoints[Mathf.Clamp(_waypointIndex, 0, waypoints.Length - 1)];
+            if (targetWp != null)
+            {
+                _agent.SetDestination(targetWp.position);
+            }
+        }
+
+        private void AdvanceWaypointIndex()
+        {
+            if (waypoints == null || waypoints.Length <= 1) return;
+
+            switch (traversalMode)
+            {
+                case RouteTraversalMode.Loop:
+                    _waypointIndex = (_waypointIndex + 1) % waypoints.Length;
+                    break;
+
+                case RouteTraversalMode.PingPong:
+                    int next = _waypointIndex + _pingPongDirection;
+                    if (next >= waypoints.Length || next < 0)
+                    {
+                        _pingPongDirection *= -1;
+                        next = _waypointIndex + _pingPongDirection;
+                    }
+                    _waypointIndex = Mathf.Clamp(next, 0, waypoints.Length - 1);
+                    break;
+
+                case RouteTraversalMode.StopAtEnd:
+                    _waypointIndex = Mathf.Min(_waypointIndex + 1, waypoints.Length - 1);
+                    break;
+            }
+        }
+
+        private void FaceTarget(Vector3 worldPos)
+        {
+            Vector3 flatDir = worldPos - transform.position;
+            flatDir.y = 0f;
+            if (flatDir.sqrMagnitude > 0.001f)
+            {
+                Quaternion targetRot = Quaternion.LookRotation(flatDir.normalized);
+                transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.deltaTime * 10f);
+            }
+        }
+
+        public void ApplyDamage(float amount)
+        {
+            _currentHp = Mathf.Max(0f, _currentHp - Mathf.Abs(amount));
+            if (_currentHp <= 0f)
+            {
+                _agent.enabled = false;
+                enabled = false;
+            }
+        }
+
+        private void OnDrawGizmosSelected()
+        {
+            if (waypoints != null && waypoints.Length > 1)
+            {
+                Gizmos.color = Color.cyan;
+                for (int i = 0; i < waypoints.Length - 1; i++)
+                {
+                    if (waypoints[i] != null && waypoints[i + 1] != null)
+                    {
+                        Gizmos.DrawLine(waypoints[i].position, waypoints[i + 1].position);
+                    }
+                }
+                if (traversalMode == RouteTraversalMode.Loop && waypoints[0] != null && waypoints[waypoints.Length - 1] != null)
+                {
+                    Gizmos.DrawLine(waypoints[waypoints.Length - 1].position, waypoints[0].position);
+                }
+            }
+
+            if (safetyWallAnchor != null)
+            {
+                Gizmos.color = new Color(1f, 0.6f, 0.1f, 0.65f);
+                Gizmos.DrawWireSphere(safetyWallAnchor.position, playerSafetyWallProximity);
+            }
+
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(transform.position, attackRange);
+        }
+    }
+}`,
+  },
+  {
+    id: 'enemy-wave-controller',
+    fileName: 'EnemyWaveController.cs',
+    className: 'EnemyWaveController : MonoBehaviour',
+    roleSummary:
+      'Non-stop enemy wave generator with time-accelerating spawn intervals that halts spawning exclusively when the player crosses the final mission waypoint.',
+    keyHighlights: [
+      'Continuously spawns weighted enemy prefabs across configurable Transform gates without stopping between waves',
+      'Accelerates spawn cadence over mission elapsed time down to a configurable minimum interval floor',
+      'Halts generator strictly upon finalMissionWaypoint traversal via radius/plane validation or trigger hook',
+    ],
+    code: `using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace MetaQuestArchery
+{
+    public class EnemyWaveController : MonoBehaviour
+    {
+        [Serializable]
+        public struct WeightedEnemyEntry
+        {
+            public GameObject prefab;
+            [Range(0.1f, 10f)]
+            public float spawnWeight;
+            [Min(1)]
+            public int unlockWaveIndex;
+        }
+
+        [Header("Non-Stop Wave Roster & Spawn Gates")]
+        [SerializeField] private WeightedEnemyEntry[] enemyRoster;
+        [SerializeField] private Transform[] spawnGates;
+        [SerializeField] private int maxConcurrentActive = 6;
+        [SerializeField] private bool startAutomaticallyOnAwake = true;
+
+        [Header("Accelerating Spawn Cadence")]
+        [SerializeField] private float initialSpawnInterval = 4.2f;
+        [SerializeField] private float minSpawnInterval = 1.05f;
+        [Tooltip("Seconds shaved off spawn interval per minute of combat survival.")]
+        [SerializeField] private float accelerationPerSecond = 0.045f;
+        [SerializeField] private float waveEscalationDuration = 22f;
+        [SerializeField] private float interWaveSpeedupBonus = 0.12f;
+
+        [Header("Final Mission Waypoint Gate")]
+        [SerializeField] private Transform playerTransform;
+        [SerializeField] private PlayerHealthDiegeticUI playerHealth;
+        [SerializeField] private Transform finalMissionWaypoint;
+        [SerializeField] private float waypointCrossRadius = 2.6f;
+        [Tooltip("Optional forward crossing test along finalMissionWaypoint.forward (>= 0 means crossed).")]
+        [SerializeField] private bool useDirectionalPlaneCheck = true;
+
+        private readonly List<GameObject> _activeEnemies = new List<GameObject>(16);
+        private bool _spawningEnabled;
+        private bool _finalWaypointCrossed;
+        private float _elapsedMissionTime;
+        private float _waveTimer;
+        private float _spawnCountdown;
+        private int _currentWaveIndex = 1;
+        private int _totalSpawnedCount;
+
+        public bool IsSpawningActive => _spawningEnabled && !_finalWaypointCrossed;
+        public bool HasCrossedFinalWaypoint => _finalWaypointCrossed;
+        public int CurrentWaveIndex => _currentWaveIndex;
+        public int TotalSpawnedCount => _totalSpawnedCount;
+        public int ActiveAliveCount
+        {
+            get
+            {
+                PruneDefeatedEntries();
+                return _activeEnemies.Count;
+            }
+        }
+        public float CurrentSpawnInterval => ComputeCurrentSpawnInterval();
+
+        public event Action<int> OnWaveEscalated;
+        public event Action<GameObject, int> OnEnemySpawned;
+        public event Action OnFinalWaypointCrossed;
+
+        private void Awake()
+        {
+            if (playerTransform == null && Camera.main != null)
+            {
+                playerTransform = Camera.main.transform;
+            }
+        }
+
+        private void Start()
+        {
+            if (startAutomaticallyOnAwake)
+            {
+                BeginNonStopWaves();
+            }
+        }
+
+        public void BeginNonStopWaves()
+        {
+            _finalWaypointCrossed = false;
+            _spawningEnabled = true;
+            _elapsedMissionTime = 0f;
+            _waveTimer = 0f;
+            _currentWaveIndex = 1;
+            _totalSpawnedCount = 0;
+            _spawnCountdown = 0.35f;
+            OnWaveEscalated?.Invoke(_currentWaveIndex);
+        }
+
+        private void Update()
+        {
+            if (!_spawningEnabled || _finalWaypointCrossed) return;
+
+            // Core invariant: enemies ONLY stop spawning when the player crosses the final mission waypoint
+            if (EvaluateFinalWaypointCrossed())
+            {
+                HandleFinalWaypointCrossed();
+                return;
+            }
+
+            float dt = Time.deltaTime;
+            _elapsedMissionTime += dt;
+            _waveTimer += dt;
+
+            if (_waveTimer >= waveEscalationDuration)
+            {
+                _waveTimer -= waveEscalationDuration;
+                _currentWaveIndex++;
+                OnWaveEscalated?.Invoke(_currentWaveIndex);
+            }
+
+            PruneDefeatedEntries();
+
+            if (maxConcurrentActive > 0 && _activeEnemies.Count >= maxConcurrentActive)
+            {
+                return;
+            }
+
+            _spawnCountdown -= dt;
+            if (_spawnCountdown <= 0f)
+            {
+                SpawnNextEnemy();
+                _spawnCountdown = ComputeCurrentSpawnInterval();
+            }
+        }
+
+        private float ComputeCurrentSpawnInterval()
+        {
+            float timeReduction = _elapsedMissionTime * accelerationPerSecond;
+            float waveReduction = Mathf.Max(0, _currentWaveIndex - 1) * interWaveSpeedupBonus;
+            float interval = initialSpawnInterval - timeReduction - waveReduction;
+            return Mathf.Max(minSpawnInterval, interval);
+        }
+
+        private bool EvaluateFinalWaypointCrossed()
+        {
+            if (finalMissionWaypoint == null || playerTransform == null) return false;
+
+            float planarDist = Vector2.Distance(
+                new Vector2(playerTransform.position.x, playerTransform.position.z),
+                new Vector2(finalMissionWaypoint.position.x, finalMissionWaypoint.position.z)
+            );
+
+            if (planarDist <= waypointCrossRadius)
+            {
+                return true;
+            }
+
+            if (useDirectionalPlaneCheck)
+            {
+                Vector3 toPlayer = playerTransform.position - finalMissionWaypoint.position;
+                toPlayer.y = 0f;
+                Vector3 gateForward = finalMissionWaypoint.forward;
+                gateForward.y = 0f;
+                if (gateForward.sqrMagnitude > 0.001f && Vector3.Dot(toPlayer, gateForward.normalized) >= 0f)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Can also be invoked externally by a TriggerCollider placed on the Extraction / Finishing Line gate.
+        /// </summary>
+        public void NotifyFinalWaypointCrossed()
+        {
+            if (_finalWaypointCrossed) return;
+            HandleFinalWaypointCrossed();
+        }
+
+        private void HandleFinalWaypointCrossed()
+        {
+            _finalWaypointCrossed = true;
+            _spawningEnabled = false;
+            OnFinalWaypointCrossed?.Invoke();
+        }
+
+        private void SpawnNextEnemy()
+        {
+            GameObject prefab = SelectWeightedPrefabForWave(_currentWaveIndex);
+            if (prefab == null) return;
+
+            Transform gate = SelectSpawnGate();
+            Vector3 spawnPos = gate != null ? gate.position : transform.position;
+            Quaternion spawnRot = gate != null ? gate.rotation : transform.rotation;
+
+            GameObject instance = Instantiate(prefab, spawnPos, spawnRot);
+            _activeEnemies.Add(instance);
+            _totalSpawnedCount++;
+
+            ArmoredEnemyAI ai = instance.GetComponent<ArmoredEnemyAI>();
+            if (ai != null && playerTransform != null)
+            {
+                ai.InitializeTarget(playerTransform, playerHealth);
+            }
+
+            OnEnemySpawned?.Invoke(instance, _totalSpawnedCount);
+        }
+
+        private GameObject SelectWeightedPrefabForWave(int waveIndex)
+        {
+            if (enemyRoster == null || enemyRoster.Length == 0) return null;
+
+            float totalWeight = 0f;
+            for (int i = 0; i < enemyRoster.Length; i++)
+            {
+                if (enemyRoster[i].prefab != null && waveIndex >= Mathf.Max(1, enemyRoster[i].unlockWaveIndex))
+                {
+                    totalWeight += Mathf.Max(0.05f, enemyRoster[i].spawnWeight);
+                }
+            }
+
+            if (totalWeight <= 0f) return enemyRoster[0].prefab;
+
+            float roll = UnityEngine.Random.Range(0f, totalWeight);
+            float accum = 0f;
+            for (int i = 0; i < enemyRoster.Length; i++)
+            {
+                WeightedEnemyEntry entry = enemyRoster[i];
+                if (entry.prefab == null || waveIndex < Mathf.Max(1, entry.unlockWaveIndex)) continue;
+                accum += Mathf.Max(0.05f, entry.spawnWeight);
+                if (roll <= accum) return entry.prefab;
+            }
+
+            return enemyRoster[0].prefab;
+        }
+
+        private Transform SelectSpawnGate()
+        {
+            if (spawnGates == null || spawnGates.Length == 0) return null;
+            int idx = UnityEngine.Random.Range(0, spawnGates.Length);
+            return spawnGates[idx];
+        }
+
+        private void PruneDefeatedEntries()
+        {
+            for (int i = _activeEnemies.Count - 1; i >= 0; i--)
+            {
+                GameObject go = _activeEnemies[i];
+                if (go == null)
+                {
+                    _activeEnemies.RemoveAt(i);
+                    continue;
+                }
+
+                ArmoredEnemyAI ai = go.GetComponent<ArmoredEnemyAI>();
+                if (ai != null && ai.IsDefeated)
+                {
+                    _activeEnemies.RemoveAt(i);
+                }
+            }
+        }
+
+        private void OnDrawGizmosSelected()
+        {
+            if (finalMissionWaypoint != null)
+            {
+                Gizmos.color = Color.green;
+                Gizmos.DrawWireSphere(finalMissionWaypoint.position, waypointCrossRadius);
+                Gizmos.DrawRay(finalMissionWaypoint.position, finalMissionWaypoint.forward * 3.5f);
+            }
+
+            if (spawnGates != null)
+            {
+                Gizmos.color = Color.yellow;
+                for (int i = 0; i < spawnGates.Length; i++)
+                {
+                    if (spawnGates[i] != null)
+                    {
+                        Gizmos.DrawWireCube(spawnGates[i].position, new Vector3(1.1f, 2.0f, 1.1f));
+                    }
+                }
+            }
         }
     }
 }`,

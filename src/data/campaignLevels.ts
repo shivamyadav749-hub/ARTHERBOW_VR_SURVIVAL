@@ -340,3 +340,14 @@ export function getLevelConfig(levelNumber: number): LevelConfig {
   const clamped = Math.max(1, Math.min(50, levelNumber));
   return CAMPAIGN_LEVELS[clamped - 1];
 }
+
+export function getLevelEnemyLimit(levelNumber: number): number {
+  const cfg = getLevelConfig(levelNumber);
+  const reinforcementCap = Math.min(6, 2 + Math.floor((cfg.level - 1) / 8));
+  return cfg.enemies.length + reinforcementCap;
+}
+
+export function getLevelConcurrentLimit(levelNumber: number): number {
+  const cfg = getLevelConfig(levelNumber);
+  return Math.min(5, Math.max(2, cfg.enemies.length));
+}

@@ -28,6 +28,7 @@ import {
   groundHeightAt,
 } from '../three/proceduralModels';
 import { createWebXRRig, WebXRRigHandle } from '../three/webxrVrRig';
+import { getLevelConcurrentLimit, getLevelEnemyLimit } from '../data/campaignLevels';
 import { soundEngine } from '../audio/soundEngine';
 
 interface ArcheryCanvasProps {
@@ -60,6 +61,7 @@ interface ArcheryCanvasProps {
     popup: Omit<ScorePopup, 'id'>
   ) => void;
   onEnemyDefeated: (enemyId: number, enemiesRemaining: number, headshotKill: boolean) => void;
+  onEnemySpawned?: (aliveCount: number) => void;
   onPlayerDamaged: (rawDamage: number, sourceLabel: string) => void;
   onShotFired: () => void;
   onUpdateTelemetry: (telemetry: LiveBallisticsTelemetry) => void;
@@ -166,6 +168,70 @@ function resolveCircleRectPushout(
   return { x, z: obs.z + obs.halfDepth + radius, collided: true };
 }
 
+function findBlockingObstacle(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  pad: number,
+  obstacles: CoverObstacle[]
+): CoverObstacle | null {
+  const dx = bx - ax;
+  const dz = bz - az;
+  let bestT = 1.0;
+  let bestObs: CoverObstacle | null = null;
+
+  for (let i = 0; i < obstacles.length; i++) {
+    const obs = obstacles[i];
+    const minX = obs.x - obs.halfWidth - pad;
+    const maxX = obs.x + obs.halfWidth + pad;
+    const minZ = obs.z - obs.halfDepth - pad;
+    const maxZ = obs.z + obs.halfDepth + pad;
+
+    let tMin = 0.0;
+    let tMax = 1.0;
+
+    if (Math.abs(dx) < 1e-6) {
+      if (ax < minX || ax > maxX) continue;
+    } else {
+      const invDx = 1 / dx;
+      let t1 = (minX - ax) * invDx;
+      let t2 = (maxX - ax) * invDx;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      tMin = Math.max(tMin, t1);
+      tMax = Math.min(tMax, t2);
+      if (tMin > tMax) continue;
+    }
+
+    if (Math.abs(dz) < 1e-6) {
+      if (az < minZ || az > maxZ) continue;
+    } else {
+      const invDz = 1 / dz;
+      let t1 = (minZ - az) * invDz;
+      let t2 = (maxZ - az) * invDz;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      tMin = Math.max(tMin, t1);
+      tMax = Math.min(tMax, t2);
+      if (tMin > tMax) continue;
+    }
+
+    if (tMin < bestT && tMax > 0.0) {
+      bestT = tMin;
+      bestObs = obs;
+    }
+  }
+
+  return bestObs;
+}
+
 export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
   gameState,
   selectedArrowType,
@@ -187,6 +253,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
   onVrOutcomeAction,
   onScoreHit,
   onEnemyDefeated,
+  onEnemySpawned,
   onPlayerDamaged,
   onShotFired,
   onUpdateTelemetry,
@@ -221,6 +288,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     onVrOutcomeAction,
     onScoreHit,
     onEnemyDefeated,
+    onEnemySpawned,
     onPlayerDamaged,
     onShotFired,
     onUpdateTelemetry,
@@ -246,6 +314,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       onVrOutcomeAction,
       onScoreHit,
       onEnemyDefeated,
+      onEnemySpawned,
       onPlayerDamaged,
       onShotFired,
       onUpdateTelemetry,
@@ -269,6 +338,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     onVrOutcomeAction,
     onScoreHit,
     onEnemyDefeated,
+    onEnemySpawned,
     onPlayerDamaged,
     onShotFired,
     onUpdateTelemetry,
@@ -419,6 +489,9 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     const enemies: ArmoredEnemyEntity[] = [];
     const enemyHitboxMeshes: THREE.Mesh[] = [];
     const incomingJavelins: IncomingJavelin[] = [];
+    let nextReinforcementId = 100;
+    let totalSpawnedInLevel = 0;
+    let reinforcementTimer = 3.2;
 
     const populateLevelEnemies = (lvl: LevelConfig) => {
       while (enemiesContainer.children.length > 0) {
@@ -426,6 +499,9 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       }
       enemies.length = 0;
       enemyHitboxMeshes.length = 0;
+      nextReinforcementId = Math.max(100, lvl.enemies.length + 10);
+      totalSpawnedInLevel = lvl.enemies.length;
+      reinforcementTimer = 3.2;
 
       lvl.enemies.forEach((spec) => {
         const entity = createArmoredEnemyModel(spec);
@@ -433,6 +509,34 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         enemiesContainer.add(entity.rootGroup);
         entity.hitboxMeshes.forEach((m) => enemyHitboxMeshes.push(m));
       });
+    };
+
+    const spawnReinforcementEnemy = (lvl: LevelConfig, currentPlayerZ: number) => {
+      const totalLimit = getLevelEnemyLimit(lvl.level);
+      if (totalSpawnedInLevel >= totalLimit) return;
+
+      const templates = lvl.enemies;
+      if (!templates || templates.length === 0) return;
+      const tpl = templates[nextReinforcementId % templates.length];
+      const spawnX = THREE.MathUtils.clamp((Math.random() - 0.5) * 12.4, -7.2, 7.2);
+      // Spawn beyond the Ending Line Gate marching toward the player up to the level enemy limit
+      const deepGateZ = Math.min(finishLineZ - 4.5, currentPlayerZ - 14.5) - Math.random() * 8.5;
+      const spawnZ = THREE.MathUtils.clamp(deepGateZ, -46, finishLineZ - 3.5);
+
+      const newId = nextReinforcementId++;
+      totalSpawnedInLevel++;
+      const entity = createArmoredEnemyModel({
+        ...tpl,
+        id: newId,
+        x: spawnX,
+        z: spawnZ,
+      });
+      enemies.push(entity);
+      enemiesContainer.add(entity.rootGroup);
+      entity.hitboxMeshes.forEach((m) => enemyHitboxMeshes.push(m));
+
+      const aliveNow = enemies.filter((e) => e.aiState !== 'defeated').length;
+      stateRef.current.onEnemySpawned?.(aliveNow);
     };
 
     populateLevelEnemies(stateRef.current.levelConfig);
@@ -965,7 +1069,13 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
 
       const aliveCount = enemies.filter((e) => e.aiState !== 'defeated').length;
       const totalEnemies = Math.max(1, enemies.length);
-      updateEnvironment(elapsed, dt, currentState.windSpeedX, aliveCount === 0);
+      const isAtFinishGate = playerPos.z <= finishLineZ + 0.5;
+      updateEnvironment(
+        elapsed,
+        dt,
+        currentState.windSpeedX,
+        isAtFinishGate || playerPos.z <= finishLineZ + 6.5
+      );
 
       if (hitstopTimer > 0) {
         hitstopTimer -= dt;
@@ -1335,8 +1445,39 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         trajLine.visible = false;
       }
 
-      // C. Update Armored Enemy AI State Machine + Line-of-Sight Stealth Evaluation
+      // C. Bounded Reinforcements (Strictly capped by concurrent + total level enemy limits)
       const activeSim = currentState.gameState === 'playing';
+      const playerReachedFinish = playerPos.z <= finishLineZ + 0.5;
+      if (activeSim && !playerReachedFinish) {
+        const lvlCfg = currentState.levelConfig;
+        const maxTotalEnemies = getLevelEnemyLimit(lvlCfg.level);
+        const maxConcurrentAlive = getLevelConcurrentLimit(lvlCfg.level);
+
+        if (totalSpawnedInLevel < maxTotalEnemies && aliveCount < maxConcurrentAlive) {
+          reinforcementTimer -= simDt * (aliveCount === 0 ? 1.8 : 1.0);
+          if (reinforcementTimer <= 0) {
+            spawnReinforcementEnemy(lvlCfg, playerPos.z);
+            const seasonPace = Math.max(2.4, 4.2 - lvlCfg.seasonId * 0.35);
+            reinforcementTimer = seasonPace + Math.random() * 1.1;
+          }
+        } else {
+          reinforcementTimer = Math.max(reinforcementTimer, 1.8);
+        }
+      }
+
+      for (let idx = enemies.length - 1; idx >= 0; idx--) {
+        const fallen = enemies[idx];
+        if (fallen.aiState === 'defeated' && fallen.defeatedAge > 2.2) {
+          enemiesContainer.remove(fallen.rootGroup);
+          for (let h = enemyHitboxMeshes.length - 1; h >= 0; h--) {
+            if (fallen.hitboxMeshes.includes(enemyHitboxMeshes[h])) {
+              enemyHitboxMeshes.splice(h, 1);
+            }
+          }
+          enemies.splice(idx, 1);
+        }
+      }
+
       let visibleEnemiesCount = 0;
       let aliveEnemiesCheckCount = 0;
 
@@ -1376,7 +1517,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         _losDir.subVectors(_camWorldPos, _enemyEyePos);
         const losLen = _losDir.length();
         let occludedByCover = false;
-        if (losLen > 2.8 && coverColliders.length > 0) {
+        if (losLen > 0.8 && coverColliders.length > 0) {
           _losDir.normalize();
           raycaster.set(_enemyEyePos, _losDir);
           raycaster.far = losLen - 0.15;
@@ -1384,6 +1525,15 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         }
         if (!occludedByCover) {
           visibleEnemiesCount++;
+        }
+
+        const playerInsideSafetyWall = playerPos.z > -3.45 && Math.abs(playerPos.x) < 5.8;
+        if (occludedByCover) {
+          enemy.occludedTimer = Math.min(8, enemy.occludedTimer + eDt);
+        } else if (playerInsideSafetyWall) {
+          enemy.occludedTimer = Math.min(8, enemy.occludedTimer + eDt * 0.45);
+        } else {
+          enemy.occludedTimer = Math.max(0, enemy.occludedTimer - eDt * 0.6);
         }
 
         if (enemy.shieldBrokenTimer > 0) {
@@ -1408,34 +1558,110 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
           enemy.rootGroup.rotation.y = Math.atan2(dxToPlayer, dzToPlayer);
         }
 
-        if (enemy.archetype === 'javelineer') {
-          const stopDist = 15 + (enemy.id % 3) * 3;
-          if (distToPlayer > stopDist) {
-            enemy.aiState = 'advance';
-            enemy.walkPhase += eDt * enemy.moveSpeed * 3.4;
-            const moveStep = enemy.moveSpeed * eDt;
-            pos.x += (dxToPlayer / Math.max(0.5, distToPlayer)) * moveStep * 0.55;
-            pos.z += (dzToPlayer / Math.max(0.5, distToPlayer)) * moveStep;
-            pos.x = THREE.MathUtils.clamp(
-              pos.x + Math.sin(enemy.walkPhase * 0.35) * enemy.strafeSign * 0.65 * eDt,
-              -8.2,
-              8.2
+        // Helper: steer around any cover wall / safety wall blocking the path so enemies come inside!
+        const blockingWall = findBlockingObstacle(
+          pos.x,
+          pos.z,
+          playerPos.x,
+          playerPos.z,
+          0.32,
+          coverObstacles
+        );
+
+        const computeNavStepDir = (): { dirX: number; dirZ: number } => {
+          if (blockingWall) {
+            const offsetFromCenter = pos.x - blockingWall.x;
+            const side =
+              Math.abs(offsetFromCenter) > 0.45
+                ? Math.sign(offsetFromCenter)
+                : enemy.strafeSign;
+            const waypointX = THREE.MathUtils.clamp(
+              blockingWall.x + side * (blockingWall.halfWidth + 0.66),
+              -7.9,
+              7.9
             );
-            pos.y = groundHeightAt(pos.x, pos.z);
+            const pastSign = playerPos.z >= blockingWall.z ? 1 : -1;
+            const waypointZ = blockingWall.z + pastSign * (blockingWall.halfDepth + 0.62);
+            const wx = waypointX - pos.x;
+            const wz = waypointZ - pos.z;
+            const wLen = Math.hypot(wx, wz);
+            if (wLen > 0.12) {
+              return { dirX: wx / wLen, dirZ: wz / wLen };
+            }
+          }
+          const len = Math.max(0.4, distToPlayer);
+          return { dirX: dxToPlayer / len, dirZ: dzToPlayer / len };
+        };
+
+        const resolveCoverAndSquad = () => {
+          pos.x = THREE.MathUtils.clamp(pos.x, -8.2, 8.2);
+          pos.z = THREE.MathUtils.clamp(pos.z, finishLineZ - 3.5, startLineZ + 2.2);
+          for (let c = 0; c < coverObstacles.length; c++) {
+            const res = resolveCircleRectPushout(pos.x, pos.z, 0.42, coverObstacles[c]);
+            if (res.collided) {
+              const sideSign =
+                Math.abs(pos.x - coverObstacles[c].x) > 0.25
+                  ? Math.sign(pos.x - coverObstacles[c].x)
+                  : enemy.strafeSign;
+              pos.x = res.x + sideSign * enemy.moveSpeed * 0.35 * eDt;
+              pos.z = res.z;
+            }
+          }
+          // Soft squad separation so multiple warriors entering the safety wall fan out cleanly
+          for (let j = 0; j < enemies.length; j++) {
+            const other = enemies[j];
+            if (other.id === enemy.id || other.aiState === 'defeated') continue;
+            const sx = pos.x - other.rootGroup.position.x;
+            const sz = pos.z - other.rootGroup.position.z;
+            const sDistSq = sx * sx + sz * sz;
+            if (sDistSq > 0.0001 && sDistSq < 0.72) {
+              const sDist = Math.sqrt(sDistSq);
+              const push = (0.85 - sDist) * 1.8 * eDt;
+              pos.x += (sx / sDist) * push;
+              pos.z += (sz / sDist) * push;
+            }
+          }
+          pos.x = THREE.MathUtils.clamp(pos.x, -8.2, 8.2);
+          pos.z = THREE.MathUtils.clamp(pos.z, finishLineZ - 3.5, startLineZ + 2.2);
+          pos.y = groundHeightAt(pos.x, pos.z);
+        };
+
+        if (enemy.archetype === 'javelineer') {
+          const baseStopDist = 15 + (enemy.id % 3) * 3;
+          // If player hides behind cover or camps inside the safety wall, Javelineers breach inward!
+          const flushRatio = THREE.MathUtils.clamp((enemy.occludedTimer - 1.8) / 3.2, 0, 1);
+          const breachStopDist = 2.8 + (enemy.id % 3) * 0.85;
+          const effectiveStopDist = THREE.MathUtils.lerp(baseStopDist, breachStopDist, flushRatio);
+
+          if (distToPlayer > effectiveStopDist || (occludedByCover && enemy.occludedTimer >= 1.8)) {
+            enemy.aiState = 'advance';
+            enemy.windupTimer = 0;
+            enemy.rightArmPivot.rotation.x = THREE.MathUtils.damp(enemy.rightArmPivot.rotation.x, 0, 8, dt);
+            if (enemy.javelinTipGlowMat) enemy.javelinTipGlowMat.emissiveIntensity = 0.25;
+
+            const nav = computeNavStepDir();
+            const speedBoost = enemy.occludedTimer >= 1.8 ? 1.18 : 1.0;
+            enemy.walkPhase += eDt * enemy.moveSpeed * speedBoost * 3.4;
+            const moveStep = enemy.moveSpeed * speedBoost * eDt;
+            pos.x += nav.dirX * moveStep;
+            pos.z += nav.dirZ * moveStep;
+            pos.x += Math.sin(enemy.walkPhase * 0.35) * enemy.strafeSign * 0.45 * eDt;
+            resolveCoverAndSquad();
+
             enemy.leftLegPivot.rotation.x = Math.sin(enemy.walkPhase) * 0.45;
             enemy.rightLegPivot.rotation.x = -Math.sin(enemy.walkPhase) * 0.45;
           } else {
             enemy.leftLegPivot.rotation.x = THREE.MathUtils.damp(enemy.leftLegPivot.rotation.x, 0, 10, dt);
             enemy.rightLegPivot.rotation.x = THREE.MathUtils.damp(enemy.rightLegPivot.rotation.x, 0, 10, dt);
 
-            // If player is hidden behind cover, Javelineer strafes laterally seeking an angle and pauses throw windup
+            // Briefly strafe laterally seeking angle before flushing inward around the safety wall
             if (occludedByCover) {
               enemy.aiState = 'advance';
               enemy.windupTimer = 0;
               enemy.rightArmPivot.rotation.x = THREE.MathUtils.damp(enemy.rightArmPivot.rotation.x, 0, 8, dt);
               if (enemy.javelinTipGlowMat) enemy.javelinTipGlowMat.emissiveIntensity = 0.25;
-              pos.x = THREE.MathUtils.clamp(pos.x + enemy.strafeSign * 1.35 * eDt, -8.2, 8.2);
-              pos.y = groundHeightAt(pos.x, pos.z);
+              pos.x += enemy.strafeSign * 1.45 * eDt;
+              resolveCoverAndSquad();
               enemy.walkPhase += eDt * 4.5;
               enemy.leftLegPivot.rotation.x = Math.sin(enemy.walkPhase) * 0.35;
               enemy.rightLegPivot.rotation.x = -Math.sin(enemy.walkPhase) * 0.35;
@@ -1507,32 +1733,20 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
             }
           }
         } else {
-          // Melee Charger (Shield Hoplite & Centurion): tracks player 3D position & flanks around cover!
-          const reachDist = 2.65;
-          if (distToPlayer > reachDist) {
-            const stealthSlow = occludedByCover ? 0.68 : 1.0;
-            const chargingBoost = distToPlayer < 13 && !occludedByCover ? 1.32 : 1.0;
+          // Melee Charger (Shield Hoplite & Centurion): flanks around bastions and breaches INSIDE the safety wall!
+          const reachDist = 1.55;
+          if (distToPlayer > reachDist || blockingWall !== null) {
+            const stealthSlow = occludedByCover && distToPlayer > 7.0 ? 0.78 : 1.0;
+            const chargingBoost = distToPlayer < 13 ? 1.32 : 1.0;
             enemy.aiState = chargingBoost > 1.1 ? 'charge_melee' : 'advance';
             enemy.walkPhase += eDt * enemy.moveSpeed * chargingBoost * stealthSlow * 3.8;
 
+            const nav = computeNavStepDir();
             const step = enemy.moveSpeed * chargingBoost * stealthSlow * eDt;
-            pos.x += (dxToPlayer / Math.max(0.5, distToPlayer)) * step;
-            pos.z += (dzToPlayer / Math.max(0.5, distToPlayer)) * step;
-            pos.x = THREE.MathUtils.clamp(
-              pos.x + Math.sin(enemy.walkPhase * 0.25) * enemy.strafeSign * 0.38 * eDt,
-              -8.2,
-              8.2
-            );
-
-            for (let c = 0; c < coverObstacles.length; c++) {
-              const res = resolveCircleRectPushout(pos.x, pos.z, 0.52, coverObstacles[c]);
-              if (res.collided) {
-                const flankDir = pos.x >= coverObstacles[c].x ? 1 : -1;
-                pos.x = res.x + flankDir * enemy.moveSpeed * 0.75 * eDt;
-                pos.z = res.z;
-              }
-            }
-            pos.y = groundHeightAt(pos.x, pos.z);
+            pos.x += nav.dirX * step;
+            pos.z += nav.dirZ * step;
+            pos.x += Math.sin(enemy.walkPhase * 0.25) * enemy.strafeSign * 0.28 * eDt;
+            resolveCoverAndSquad();
 
             enemy.leftLegPivot.rotation.x = Math.sin(enemy.walkPhase) * 0.55;
             enemy.rightLegPivot.rotation.x = -Math.sin(enemy.walkPhase) * 0.55;

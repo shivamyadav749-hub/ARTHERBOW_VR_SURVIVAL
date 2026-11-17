@@ -1479,7 +1479,7 @@ export function createAlpineEnvironment(
   const coverObstacles: CoverObstacle[] = [];
 
   // A) Center Low Timber Shield-Wall (height 1.18m: shoot over while standing at 1.68m, HIDE completely when crouched at 0.94m)
-  const centerWallW = 4.4;
+  const centerWallW = 4.0;
   const centerWallH = 1.18;
   const centerWallD = 0.44;
   const centerWallZ = -3.6;
@@ -1500,7 +1500,7 @@ export function createAlpineEnvironment(
   wallTopRail.castShadow = true;
   centerWallMesh.add(wallTopRail);
 
-  [-1.6, 0, 1.6].forEach((bx) => {
+  [-1.45, 0, 1.45].forEach((bx) => {
     const band = new THREE.Mesh(
       new THREE.BoxGeometry(0.14, centerWallH + 0.04, centerWallD + 0.08),
       ironBandMat
@@ -1509,7 +1509,7 @@ export function createAlpineEnvironment(
     centerWallMesh.add(band);
 
     const stake = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.075, 1.05, 8), wallTimberMat);
-    stake.position.set(bx + 0.58, 0.08, -centerWallD * 0.68);
+    stake.position.set(bx + 0.52, 0.08, -centerWallD * 0.68);
     stake.rotation.x = -0.42;
     stake.castShadow = true;
     centerWallMesh.add(stake);
@@ -1526,10 +1526,10 @@ export function createAlpineEnvironment(
     mesh: centerWallMesh,
   });
 
-  // B) Left & Right Ancient Ashlar Stone Bastions & Forward Cover Pillars along Start -> Finish Route
+  // B) Left & Right Ancient Ashlar Stone Bastions (framed with 1.32m breach corridors so enemies can also enter inside the safety wall)
   const flankConfigs = [
-    { id: 'bastion-left', x: -3.9, z: -3.2, w: 1.9, h: 2.15, d: 0.95 },
-    { id: 'bastion-right', x: 3.9, z: -3.2, w: 1.9, h: 2.15, d: 0.95 },
+    { id: 'bastion-left', x: -4.25, z: -3.2, w: 1.85, h: 2.15, d: 0.95 },
+    { id: 'bastion-right', x: 4.25, z: -3.2, w: 1.85, h: 2.15, d: 0.95 },
     { id: 'pillar-mid-left', x: -4.8, z: -10.5, w: 1.65, h: 2.35, d: 1.1 },
     { id: 'pillar-mid-right', x: 4.8, z: -10.5, w: 1.65, h: 2.35, d: 1.1 },
     { id: 'barricade-advance', x: -1.4, z: -16.8, w: 2.5, h: 1.2, d: 0.6 },
@@ -1598,8 +1598,8 @@ export function createAlpineEnvironment(
   });
 
   [
-    { x: -5.4, z: -3.2, withLight: true },
-    { x: 5.4, z: -3.2, withLight: true },
+    { x: -5.9, z: -3.2, withLight: true },
+    { x: 5.9, z: -3.2, withLight: true },
     { x: -6.7, z: -10.5, withLight: true },
     { x: 6.7, z: -10.5, withLight: true },
   ].forEach((bp, idx) => {
@@ -1851,6 +1851,7 @@ export interface ArmoredEnemyEntity {
   aiState: EnemyAIState;
   walkPhase: number;
   strafeSign: number;
+  occludedTimer: number;
   defeatedAge: number;
 }
 
@@ -2151,6 +2152,7 @@ export function createArmoredEnemyModel(spec: EnemySpawnSpec): ArmoredEnemyEntit
     aiState: 'advance',
     walkPhase: spec.id * 1.1,
     strafeSign: spec.id % 2 === 0 ? 1 : -1,
+    occludedTimer: 0,
     defeatedAge: 0,
   };
 }

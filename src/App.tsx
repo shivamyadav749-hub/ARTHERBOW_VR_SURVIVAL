@@ -40,7 +40,7 @@ import { UnityScriptModal } from './components/UnityScriptModal';
 import { SettingsModal } from './components/SettingsModal';
 import { LevelProgressRecord, LevelSelectModal } from './components/LevelSelectModal';
 import { ArmoryModal } from './components/ArmoryModal';
-import { getLevelConfig, getSeasonForLevel, SEASONS } from './data/campaignLevels';
+import { getLevelConfig, getLevelEnemyLimit, getSeasonForLevel, SEASONS } from './data/campaignLevels';
 import { computePlayerDefenseStats } from './data/armoryData';
 import { checkWebXRSupport } from './three/webxrVrRig';
 import { soundEngine } from './audio/soundEngine';
@@ -117,11 +117,13 @@ export default function App() {
 
   const defenseStats = computePlayerDefenseStats(equippedArmorId, equippedHelmetId);
   const levelConfig = getLevelConfig(currentLevel);
+  const levelEnemyLimit = getLevelEnemyLimit(currentLevel);
   const seasonConfig = getSeasonForLevel(currentLevel);
 
   const [selectedArrowType, setSelectedArrowType] = useState<ArrowTypeId>('standard');
   const [playerHp, setPlayerHp] = useState<number>(defenseStats.maxHp);
   const [enemiesRemaining, setEnemiesRemaining] = useState<number>(levelConfig.enemies.length);
+  const [enemiesDefeatedCount, setEnemiesDefeatedCount] = useState<number>(0);
   const [score, setScore] = useState<number>(0);
   const [levelCoinsEarned, setLevelCoinsEarned] = useState<number>(0);
   const [shotsFired, setShotsFired] = useState<number>(0);
@@ -218,6 +220,7 @@ export default function App() {
       setCurrentLevel(clamped);
       setPlayerHp(nextDefense.maxHp);
       setEnemiesRemaining(nextCfg.enemies.length);
+      setEnemiesDefeatedCount(0);
       setScore(0);
       setLevelCoinsEarned(0);
       setShotsFired(0);
@@ -305,9 +308,14 @@ export default function App() {
   const handleEnemyDefeated = useCallback(
     (_enemyId: number, aliveLeft: number, _headshotKill: boolean) => {
       setEnemiesRemaining(aliveLeft);
+      setEnemiesDefeatedCount((prev) => prev + 1);
     },
     []
   );
+
+  const handleEnemySpawned = useCallback((aliveNow: number) => {
+    setEnemiesRemaining(aliveNow);
+  }, []);
 
   const handlePlayerDamaged = useCallback(
     (rawDamage: number, sourceLabel: string) => {
@@ -372,7 +380,7 @@ export default function App() {
       return () => window.clearTimeout(failTimer);
     }
 
-    if (enemiesRemaining <= 0 && telemetry.crossedFinishLine) {
+    if (telemetry.crossedFinishLine) {
       const winTimer = window.setTimeout(() => {
         const hpRatio = playerHp / Math.max(1, defenseStats.maxHp);
         const stars = hpRatio >= 0.8 ? 3 : hpRatio >= 0.45 ? 2 : 1;
@@ -394,14 +402,13 @@ export default function App() {
         });
         setMaxUnlockedLevel((prev) => Math.max(prev, Math.min(50, currentLevel + 1)));
         setGameState('level_complete');
-      }, 420);
+      }, 320);
       return () => window.clearTimeout(winTimer);
     }
   }, [
     gameState,
     playerHp,
     defenseStats.maxHp,
-    enemiesRemaining,
     telemetry.crossedFinishLine,
     currentLevel,
     levelConfig.coinReward,
@@ -622,6 +629,7 @@ export default function App() {
         onVrOutcomeAction={handleVrOutcomeAction}
         onScoreHit={handleScoreHit}
         onEnemyDefeated={handleEnemyDefeated}
+        onEnemySpawned={handleEnemySpawned}
         onPlayerDamaged={handlePlayerDamaged}
         onShotFired={handleShotFired}
         onUpdateTelemetry={setTelemetry}
@@ -678,7 +686,7 @@ export default function App() {
                 className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-sky-300 bg-[#0B101B]/90 hover:bg-[#151F32] border border-sky-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Code2 className="w-4 h-4" />
-                <span>Unity C# Scripts (23 Files)</span>
+                <span>Unity C# Scripts (25 Files)</span>
               </button>
             </div>
           </div>
@@ -697,7 +705,7 @@ export default function App() {
             <p className="text-sm md:text-base text-slate-300 leading-relaxed mb-7 max-w-xl">
               Strafe, sprint, and crouch behind stone bastions & timber cover across 5 Seasons and
               50 levels. Break enemy sightlines to dodge incoming javelins, land 2.5x headshots above
-              bronze shields, forge ancient armor with earned coins, and inspect the 12-script Unity
+              bronze shields, forge ancient armor with earned coins, and inspect the 25-script Unity
               Quest C# codebase.
             </p>
 
@@ -799,9 +807,12 @@ export default function App() {
                 </div>
                 <div className="h-7 w-px bg-white/10" />
                 <div>
-                  <div className="text-[11px] text-slate-400">WARRIORS LEFT</div>
+                  <div className="text-[11px] text-slate-400">ACTIVE · LIMIT</div>
                   <div className="text-lg font-bold text-amber-400">
-                    {enemiesRemaining} / {levelConfig.enemies.length}
+                    {enemiesRemaining}{' '}
+                    <span className="text-xs font-normal text-slate-400">
+                      · {enemiesDefeatedCount}/{levelEnemyLimit} slain
+                    </span>
                   </div>
                 </div>
                 <div className="hidden sm:block h-7 w-px bg-white/10" />
@@ -838,26 +849,24 @@ export default function App() {
                 />
               </div>
 
-              {/* Mission Task: Starting Line -> Ending Line Progression */}
+              {/* Mission Task: Endless Incoming Waves until Crossing Ending Line */}
               <div className="mt-2.5 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between gap-2 text-[11px] font-mono mb-1.5">
                   <div className="flex items-center gap-1.5 text-slate-300">
                     <Flag
                       className={`w-3.5 h-3.5 ${
-                        enemiesRemaining === 0 ? 'text-emerald-400' : 'text-amber-400'
+                        telemetry.crossedFinishLine ? 'text-emerald-400' : 'text-amber-400'
                       }`}
                     />
                     <span className="font-semibold">
-                      {enemiesRemaining > 0
-                        ? `TASK: DEFEAT ${enemiesRemaining} & CROSS ENDING LINE`
-                        : telemetry.crossedFinishLine
-                        ? 'EXTRACTION COMPLETE!'
-                        : 'PATH CLEAR · CROSS ENDING LINE GATE!'}
+                      {telemetry.crossedFinishLine
+                        ? 'ENDING LINE REACHED · EXTRACTION COMPLETE!'
+                        : `SURVIVE WAVES (${enemiesRemaining} ACTIVE) & REACH ENDING LINE`}
                     </span>
                   </div>
                   <span
                     className={`font-bold tabular-nums ${
-                      enemiesRemaining === 0 ? 'text-emerald-400' : 'text-amber-300'
+                      telemetry.crossedFinishLine ? 'text-emerald-400' : 'text-amber-300'
                     }`}
                   >
                     {telemetry.crossedFinishLine
@@ -871,7 +880,7 @@ export default function App() {
                     className="h-full transition-all duration-150 rounded-full"
                     style={{
                       width: `${telemetry.routeProgressPct}%`,
-                      backgroundColor: enemiesRemaining === 0 ? '#10B981' : '#F59E0B',
+                      backgroundColor: telemetry.crossedFinishLine ? '#10B981' : '#F59E0B',
                     }}
                   />
                 </div>
@@ -880,7 +889,7 @@ export default function App() {
                   <span>
                     {telemetry.routeProgressPct}% TRAIL ({telemetry.distanceToFinishMeters.toFixed(1)}m left)
                   </span>
-                  <span className={enemiesRemaining === 0 ? 'text-emerald-400 font-bold' : ''}>
+                  <span className={telemetry.crossedFinishLine ? 'text-emerald-400 font-bold' : ''}>
                     ENDING GATE
                   </span>
                 </div>
@@ -1157,9 +1166,9 @@ export default function App() {
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Warriors Remaining</span>
+                <span className="text-slate-400">Warriors Slain / Limit</span>
                 <span className="text-amber-400 font-bold">
-                  {enemiesRemaining} / {levelConfig.enemies.length}
+                  {enemiesDefeatedCount} / {levelEnemyLimit} ({enemiesRemaining} active)
                 </span>
               </div>
               <div className="flex justify-between">
@@ -1204,7 +1213,7 @@ export default function App() {
                 onClick={() => setIsScriptModalOpen(true)}
                 className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-[#162033] hover:bg-slate-800 border border-sky-400/40 rounded-lg transition-colors cursor-pointer"
               >
-                Inspect Unity C# Scripts (23 Files)
+                Inspect Unity C# Scripts (25 Files)
               </button>
               <button
                 onClick={() => startLevel(currentLevel, true)}
@@ -1351,9 +1360,9 @@ export default function App() {
                 <span className="text-amber-300 font-bold">+{levelCoinsEarned} ({coins} total)</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Warriors Left</span>
+                <span className="text-slate-400">Warriors Slain / Limit</span>
                 <span className="text-rose-400 font-bold">
-                  {enemiesRemaining} / {levelConfig.enemies.length}
+                  {enemiesDefeatedCount} / {levelEnemyLimit} ({enemiesRemaining} active)
                 </span>
               </div>
               <div className="flex justify-between">
