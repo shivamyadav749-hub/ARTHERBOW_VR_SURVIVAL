@@ -6193,4 +6193,408 @@ namespace MetaQuestArchery
     }
 }`,
   },
+  {
+    id: 'xr-hand-bow-input-controller',
+    fileName: 'XRHandBowInputController.cs',
+    className: 'XRHandBowInputController',
+    roleSummary:
+      'Purely Hands-First (controllerless) Unity XR.Hands input controller for Meta Quest: drives bow grip pose, thumb-index pinch string drawing, middle-finger pinch parabolic teleportation, ring-pinch snap turning, shoulder-quiver arrow cycling, and palm-up diegetic wrist menu with seamless Touch controller fallback.',
+    keyHighlights: [
+      'Reads UnityEngine.XR.Hands XRHandSubsystem joints (Wrist, Palm, ThumbTip, IndexTip, MiddleTip, RingTip) with zero controller dependency',
+      'Pinch-to-draw hysteresis (3.2cm enter / 4.6cm exit) drives VRBowController.TryNockArrow and ReleaseString via a tracked pinch anchor Transform',
+      'Implements Middle-Finger Pinch parabolic floor teleportation, Ring-Pinch ±35° snap turning, Over-Shoulder Quiver arrow cycling, and Palm-Up Wrist Menu poke detection',
+    ],
+    code: `using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.XR;
+using UnityEngine.XR.Hands;
+
+namespace MetaQuestArchery
+{
+    /// <summary>
+    /// Controllerless Hands-First input driver built on UnityEngine.XR.Hands (XRHandSubsystem).
+    /// Enables full Meta Quest gameplay without Touch controllers while falling back seamlessly
+    /// whenever physical controllers are active.
+    /// </summary>
+    public class XRHandBowInputController : MonoBehaviour
+    {
+        [Header("Core References")]
+        [SerializeField] private VRBowController bowController;
+        [SerializeField] private VRArrowProjectile projectilePrefab;
+        [SerializeField] private QuiverManager quiverManager;
+        [SerializeField] private Transform xrOriginTransform;
+        [SerializeField] private Transform headCameraTransform;
+        [SerializeField] private CharacterController characterController;
+
+        [Header("Handedness & Virtual Anchors")]
+        [SerializeField] private bool rightHandDraws = true;
+        [SerializeField] private Transform bowMountTransform;
+        [SerializeField] private Transform drawPinchAnchor;
+
+        [Header("Pinch Thresholds (Meters)")]
+        [SerializeField] private float pinchEnterMeters = 0.032f;
+        [SerializeField] private float pinchExitMeters = 0.046f;
+        [SerializeField] private float shoulderQuiverRadius = 0.36f;
+
+        [Header("Hands-First Teleport & Snap Turn")]
+        [SerializeField] private LayerMask teleportGroundMask = ~0;
+        [SerializeField] private float teleportLaunchSpeed = 9.0f;
+        [SerializeField] private float snapTurnDegrees = 35f;
+        [SerializeField] private LineRenderer teleportArcRenderer;
+        [SerializeField] private Transform teleportReticleTransform;
+
+        [Header("Palm-Up Diegetic Wrist Menu")]
+        [SerializeField] private GameObject wristMenuRoot;
+        [SerializeField] private float palmUpDotThreshold = 0.65f;
+        [SerializeField] private Transform[] wristMenuButtons;
+        [SerializeField] private float wristPokeRadiusMeters = 0.045f;
+
+        private XRHandSubsystem _handSubsystem;
+        private readonly List<XRHandSubsystem> _subsystems = new List<XRHandSubsystem>();
+
+        private bool _isDrawPinching;
+        private bool _isTeleportPinching;
+        private bool _prevLeftRingPinch;
+        private bool _prevRightRingPinch;
+        private bool _hasValidTeleportPoint;
+        private Vector3 _teleportLandingPoint;
+        private float _quiverCooldownEndTime;
+        private float _wristCooldownEndTime;
+
+        public bool IsUsingBareHands { get; private set; }
+
+        private void OnEnable()
+        {
+            RefreshHandSubsystem();
+        }
+
+        private void Update()
+        {
+            if (_handSubsystem == null || !_handSubsystem.running)
+            {
+                RefreshHandSubsystem();
+                if (_handSubsystem == null)
+                {
+                    IsUsingBareHands = false;
+                    return;
+                }
+            }
+
+            XRHand left = _handSubsystem.leftHand;
+            XRHand right = _handSubsystem.rightHand;
+
+            // Yield to physical Touch controllers if controller devices are actively sending pose/buttons
+            bool controllersActive = AreControllersActivelyTracked();
+            IsUsingBareHands = !controllersActive && (left.isTracked || right.isTracked);
+            if (!IsUsingBareHands)
+            {
+                HideTeleportVisuals();
+                if (wristMenuRoot != null) wristMenuRoot.SetActive(false);
+                return;
+            }
+
+            XRHand bowHand = rightHandDraws ? left : right;
+            XRHand drawHand = rightHandDraws ? right : left;
+
+            UpdateBowHandPose(bowHand);
+            UpdateDrawPinchBowControl(drawHand);
+            UpdateTeleportPinch(bowHand, drawHand);
+            UpdateSnapTurnRingPinch(left, right);
+            UpdatePalmUpWristMenu(bowHand, drawHand);
+        }
+
+        private void RefreshHandSubsystem()
+        {
+            _subsystems.Clear();
+            SubsystemManager.GetSubsystems(_subsystems);
+            for (int i = 0; i < _subsystems.Count; i++)
+            {
+                if (_subsystems[i].running)
+                {
+                    _handSubsystem = _subsystems[i];
+                    return;
+                }
+            }
+            _handSubsystem = _subsystems.Count > 0 ? _subsystems[0] : null;
+        }
+
+        private bool AreControllersActivelyTracked()
+        {
+            InputDevice leftDev = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
+            InputDevice rightDev = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
+            bool leftTracked = leftDev.isValid && leftDev.TryGetFeatureValue(CommonUsages.isTracked, out bool lt) && lt;
+            bool rightTracked = rightDev.isValid && rightDev.TryGetFeatureValue(CommonUsages.isTracked, out bool rt) && rt;
+            return leftTracked || rightTracked;
+        }
+
+        private void UpdateBowHandPose(XRHand bowHand)
+        {
+            if (!bowHand.isTracked || bowMountTransform == null || xrOriginTransform == null) return;
+
+            if (TryGetJointWorldPose(bowHand, XRHandJointID.Palm, out Vector3 palmPos, out Quaternion palmRot))
+            {
+                bowMountTransform.position = palmPos;
+                // Align bow upright along palm orientation when not overridden by two-handed draw
+                if (!bowController.IsDrawing)
+                {
+                    bowMountTransform.rotation = palmRot * Quaternion.Euler(0f, 0f, rightHandDraws ? -15f : 15f);
+                }
+            }
+        }
+
+        private void UpdateDrawPinchBowControl(XRHand drawHand)
+        {
+            if (!drawHand.isTracked || drawPinchAnchor == null) return;
+
+            if (!TryGetJointWorldPose(drawHand, XRHandJointID.ThumbTip, out Vector3 thumbPos, out _) ||
+                !TryGetJointWorldPose(drawHand, XRHandJointID.IndexTip, out Vector3 indexPos, out _))
+            {
+                return;
+            }
+
+            Vector3 pinchMid = (thumbPos + indexPos) * 0.5f;
+            drawPinchAnchor.position = pinchMid;
+
+            float dist = Vector3.Distance(thumbPos, indexPos);
+            bool nextPinch = _isDrawPinching ? dist < pinchExitMeters : dist < pinchEnterMeters;
+
+            if (nextPinch && !_isDrawPinching)
+            {
+                // Check Over-Shoulder Quiver Reach to cycle arrow type without buttons
+                if (IsInShoulderQuiverZone(pinchMid) && Time.time >= _quiverCooldownEndTime)
+                {
+                    _quiverCooldownEndTime = Time.time + 0.55f;
+                    quiverManager?.CycleNextArrowType();
+                }
+                else if (bowController != null && projectilePrefab != null)
+                {
+                    VRArrowProjectile spawned = Instantiate(projectilePrefab, pinchMid, Quaternion.identity);
+                    if (!bowController.TryNockArrow(spawned, drawPinchAnchor, rightHandDraws ? XRNode.RightHand : XRNode.LeftHand))
+                    {
+                        Destroy(spawned.gameObject);
+                    }
+                }
+            }
+            else if (!nextPinch && _isDrawPinching)
+            {
+                bowController?.ReleaseString();
+            }
+
+            _isDrawPinching = nextPinch;
+        }
+
+        private void UpdateTeleportPinch(XRHand bowHand, XRHand drawHand)
+        {
+            XRHand activeHand = bowHand.isTracked ? bowHand : drawHand;
+            if (!activeHand.isTracked || _isDrawPinching)
+            {
+                if (_isTeleportPinching && _hasValidTeleportPoint)
+                {
+                    CommitTeleport(_teleportLandingPoint);
+                }
+                _isTeleportPinching = false;
+                HideTeleportVisuals();
+                return;
+            }
+
+            bool hasJoints =
+                TryGetJointWorldPose(activeHand, XRHandJointID.ThumbTip, out Vector3 thumbPos, out _) &&
+                TryGetJointWorldPose(activeHand, XRHandJointID.MiddleTip, out Vector3 midPos, out _) &&
+                TryGetJointWorldPose(activeHand, XRHandJointID.Palm, out Vector3 palmPos, out Quaternion palmRot);
+
+            if (!hasJoints)
+            {
+                HideTeleportVisuals();
+                return;
+            }
+
+            float dist = Vector3.Distance(thumbPos, midPos);
+            bool nextTele = _isTeleportPinching ? dist < pinchExitMeters : dist < pinchEnterMeters;
+
+            if (nextTele)
+            {
+                ComputeAndRenderTeleportArc(palmPos, (palmRot * Vector3.forward).normalized);
+            }
+            else
+            {
+                if (_isTeleportPinching && _hasValidTeleportPoint)
+                {
+                    CommitTeleport(_teleportLandingPoint);
+                }
+                HideTeleportVisuals();
+            }
+
+            _isTeleportPinching = nextTele;
+        }
+
+        private void UpdateSnapTurnRingPinch(XRHand left, XRHand right)
+        {
+            bool leftPinch = IsFingerPinching(left, XRHandJointID.RingTip, _prevLeftRingPinch);
+            bool rightPinch = IsFingerPinching(right, XRHandJointID.RingTip, _prevRightRingPinch);
+
+            if (xrOriginTransform != null)
+            {
+                if (leftPinch && !_prevLeftRingPinch)
+                    xrOriginTransform.Rotate(0f, -snapTurnDegrees, 0f, Space.World);
+
+                if (rightPinch && !_prevRightRingPinch)
+                    xrOriginTransform.Rotate(0f, snapTurnDegrees, 0f, Space.World);
+            }
+
+            _prevLeftRingPinch = leftPinch;
+            _prevRightRingPinch = rightPinch;
+        }
+
+        private void UpdatePalmUpWristMenu(XRHand bowHand, XRHand drawHand)
+        {
+            if (wristMenuRoot == null) return;
+
+            bool showMenu = false;
+            if (bowHand.isTracked && !_isDrawPinching &&
+                TryGetJointWorldPose(bowHand, XRHandJointID.Palm, out Vector3 palmPos, out Quaternion palmRot))
+            {
+                Vector3 palmUp = palmRot * Vector3.up;
+                if (Vector3.Dot(palmUp, Vector3.up) > palmUpDotThreshold)
+                {
+                    showMenu = true;
+                    wristMenuRoot.SetActive(true);
+                    wristMenuRoot.transform.position = palmPos + Vector3.up * 0.12f;
+                    if (headCameraTransform != null)
+                    {
+                        wristMenuRoot.transform.LookAt(headCameraTransform);
+                    }
+
+                    if (drawHand.isTracked && Time.time >= _wristCooldownEndTime && wristMenuButtons != null &&
+                        TryGetJointWorldPose(drawHand, XRHandJointID.IndexTip, out Vector3 idxTip, out _))
+                    {
+                        for (int i = 0; i < wristMenuButtons.Length; i++)
+                        {
+                            if (wristMenuButtons[i] != null &&
+                                Vector3.Distance(idxTip, wristMenuButtons[i].position) <= wristPokeRadiusMeters)
+                            {
+                                _wristCooldownEndTime = Time.time + 0.5f;
+                                if (i == 0) quiverManager?.CycleNextArrowType();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!showMenu && wristMenuRoot.activeSelf)
+            {
+                wristMenuRoot.SetActive(false);
+            }
+        }
+
+        private bool IsInShoulderQuiverZone(Vector3 worldPoint)
+        {
+            if (headCameraTransform == null) return false;
+            Vector3 headLocal = headCameraTransform.InverseTransformPoint(worldPoint);
+            return headLocal.z > 0.04f && headLocal.y < 0.15f && worldPoint.magnitude > 0f &&
+                   Vector3.Distance(worldPoint, headCameraTransform.position) <= shoulderQuiverRadius;
+        }
+
+        private bool IsFingerPinching(XRHand hand, XRHandJointID tipId, bool wasPinching)
+        {
+            if (!hand.isTracked) return false;
+            if (!TryGetJointWorldPose(hand, XRHandJointID.ThumbTip, out Vector3 thumb, out _) ||
+                !TryGetJointWorldPose(hand, tipId, out Vector3 tip, out _))
+                return false;
+
+            float d = Vector3.Distance(thumb, tip);
+            return wasPinching ? d < pinchExitMeters : d < pinchEnterMeters;
+        }
+
+        private bool TryGetJointWorldPose(XRHand hand, XRHandJointID jointId, out Vector3 worldPos, out Quaternion worldRot)
+        {
+            XRHandJoint joint = hand.GetJoint(jointId);
+            if (joint.TryGetPose(out Pose localPose))
+            {
+                if (xrOriginTransform != null)
+                {
+                    worldPos = xrOriginTransform.TransformPoint(localPose.position);
+                    worldRot = xrOriginTransform.rotation * localPose.rotation;
+                }
+                else
+                {
+                    worldPos = localPose.position;
+                    worldRot = localPose.rotation;
+                }
+                return true;
+            }
+            worldPos = Vector3.zero;
+            worldRot = Quaternion.identity;
+            return false;
+        }
+
+        private void ComputeAndRenderTeleportArc(Vector3 origin, Vector3 forward)
+        {
+            const int steps = 20;
+            const float stepDt = 0.055f;
+            Vector3 pos = origin;
+            Vector3 vel = forward * teleportLaunchSpeed + Vector3.up * 1.5f;
+
+            _hasValidTeleportPoint = false;
+            if (teleportArcRenderer != null)
+            {
+                teleportArcRenderer.enabled = true;
+                teleportArcRenderer.positionCount = steps;
+            }
+
+            for (int i = 0; i < steps; i++)
+            {
+                teleportArcRenderer?.SetPosition(i, pos);
+                Vector3 nextVel = vel + Physics.gravity * stepDt;
+                Vector3 stepDelta = vel * stepDt;
+
+                if (Physics.Raycast(pos, stepDelta.normalized, out RaycastHit hit, stepDelta.magnitude, teleportGroundMask))
+                {
+                    _hasValidTeleportPoint = true;
+                    _teleportLandingPoint = hit.point;
+                    for (int j = i + 1; j < steps; j++)
+                    {
+                        teleportArcRenderer?.SetPosition(j, hit.point);
+                    }
+                    break;
+                }
+
+                pos += stepDelta;
+                vel = nextVel;
+            }
+
+            if (teleportReticleTransform != null)
+            {
+                teleportReticleTransform.gameObject.SetActive(_hasValidTeleportPoint);
+                if (_hasValidTeleportPoint)
+                {
+                    teleportReticleTransform.position = _teleportLandingPoint + Vector3.up * 0.03f;
+                }
+            }
+        }
+
+        private void CommitTeleport(Vector3 targetWorldPos)
+        {
+            if (xrOriginTransform == null) return;
+            if (characterController != null)
+            {
+                characterController.enabled = false;
+                xrOriginTransform.position = targetWorldPos;
+                characterController.enabled = true;
+            }
+            else
+            {
+                xrOriginTransform.position = targetWorldPos;
+            }
+            _hasValidTeleportPoint = false;
+        }
+
+        private void HideTeleportVisuals()
+        {
+            if (teleportArcRenderer != null) teleportArcRenderer.enabled = false;
+            if (teleportReticleTransform != null) teleportReticleTransform.gameObject.SetActive(false);
+        }
+    }
+}`,
+  },
 ];

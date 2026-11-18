@@ -651,6 +651,10 @@ export default function App() {
     }
   }, [gameState, canAdvanceToNextLevel, nextLevel, currentLevel, startLevel]);
 
+  const handleVrTogglePause = useCallback(() => {
+    setGameState((prev) => (prev === 'playing' ? 'paused' : prev === 'paused' ? 'playing' : prev));
+  }, []);
+
   return (
     <div className="relative w-full h-[100dvh] overflow-hidden bg-[#070B12] select-none touch-none">
       {/* Isolated 60fps Three.js WebGL Viewport */}
@@ -677,6 +681,7 @@ export default function App() {
         onVrStateChange={setIsInVr}
         onSelectArrowFromVr={handleSelectArrow}
         onVrOutcomeAction={handleVrOutcomeAction}
+        onVrTogglePause={handleVrTogglePause}
         onScoreHit={handleScoreHit}
         onEnemyDefeated={handleEnemyDefeated}
         onEnemySpawned={handleEnemySpawned}
@@ -736,7 +741,7 @@ export default function App() {
                 className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-xs font-semibold text-sky-300 bg-[#0B101B]/90 hover:bg-[#151F32] border border-sky-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Code2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                <span>Unity C# (28)</span>
+                <span>Unity C# (29)</span>
               </button>
             </div>
           </div>
@@ -755,7 +760,7 @@ export default function App() {
             <p className="text-xs sm:text-sm md:text-base text-slate-300 leading-relaxed mb-5 sm:mb-7 max-w-xl">
               Strafe, sprint, and crouch behind stone bastions & timber cover across 5 Seasons and
               50 levels. Break enemy sightlines to dodge incoming javelins, land 2.5x headshots above
-              bronze shields, forge ancient armor with earned coins, and inspect the 28-script Unity
+              bronze shields, forge ancient armor with earned coins, and inspect the 29-script Unity
               Quest C# codebase.
             </p>
 
@@ -1385,7 +1390,7 @@ export default function App() {
                 onClick={() => setIsScriptModalOpen(true)}
                 className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-[#162033] hover:bg-slate-800 border border-sky-400/40 rounded-lg transition-colors cursor-pointer"
               >
-                Inspect Unity C# Scripts (28 Files)
+                Inspect Unity C# Scripts (29 Files)
               </button>
               <button
                 onClick={() => startLevel(currentLevel, true)}

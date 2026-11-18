@@ -1,12 +1,12 @@
 # AetherBow VR — Quest Archery & Ballistics Suite
 
-An interactive 3D and WebXR VR archery survival simulation built with **React**, **TypeScript**, **Three.js**, and **Tailwind CSS**, paired with a built-in **28-script Unity Meta Quest C# Inspector** for porting bow mechanics, spatial audio, haptics, enemy AI, and stamina systems into Unity XR Interaction Toolkit projects.
+An interactive 3D and WebXR VR archery survival simulation built with **React**, **TypeScript**, **Three.js**, and **Tailwind CSS**, paired with a built-in **29-script Unity Meta Quest C# Inspector** for porting hands-first bow mechanics, spatial audio, haptics, enemy AI, and stamina systems into Unity XR Interaction Toolkit & XR Hands projects.
 
 ---
 
 ## Features
 
-- **3D & WebXR VR Archery Simulation**: Real-time Three.js combat arena with WebXR stereo headset support (`webxrVrRig.ts`), virtual IPD and dominant-eye calibration, and string-hand anchor offset controls.
+- **3D, WebXR VR & Hands-First Interaction**: Real-time Three.js combat arena with WebXR stereo headset support (`webxrVrRig.ts`), native controllerless `XRHand` joint tracking (pinch-to-draw, middle-pinch teleportation, ring-pinch snap turn, shoulder-quiver arrow cycling, palm-up wrist menu) plus seamless Touch controller fallback, virtual IPD, and dominant-eye calibration.
 - **Aerodynamic Ballistics & Trajectory Preview**: Draw-length tension physics, gravity/drag coefficients per arrow type, crosswind drift, parabolic arc previews, and live telemetry (draw %, velocity, flight distance, active projectiles).
 - **5 Specialized Arrow Types (`1`–`5`)**:
   - **Carbon Broadhead (`1`)** — High-velocity precision shaft built for `2.5x` critical headshots.
@@ -19,7 +19,7 @@ An interactive 3D and WebXR VR archery survival simulation built with **React**,
 - **Ancient Armory & Defense Stats**: Spend earned campaign coins on 5 armor pieces and 5 helmets (scaling max HP and damage reduction) with instant repair (`R`) and emergency medkit (`H`) mechanics.
 - **Multi-Touch Mobile Controls**: Responsive portrait/landscape HUD with a virtual movement joystick, auto-sprint / Sprint Lock, Hold-to-Draw trigger with radial tension ring, Cancel Shot gesture, crouch toggle, and touch swipe-to-aim sensitivity calibration.
 - **Procedural Web Audio Engine**: Synthesized bowstring draw creaks, release snaps, spatial arrow whooshes, impact textures, and UI feedback with zero external audio assets required.
-- **28 Production Unity Meta Quest C# Scripts**: In-app code inspector (`C`) with copyable C# modules covering XR bow interaction, ballistics, penetration, wind, dynamic sights, enemy NavMesh AI, non-stop wave spawning, haptics, spatial audio, and bow stamina.
+- **29 Production Unity Meta Quest C# Scripts**: In-app code inspector (`C`) with copyable C# modules covering `XRHand` hands-first interaction, bow physics, ballistics, penetration, wind, dynamic sights, enemy NavMesh AI, non-stop wave spawning, haptics, spatial audio, and bow stamina.
 
 ---
 
@@ -43,14 +43,21 @@ An interactive 3D and WebXR VR archery survival simulation built with **React**,
 - **Right Thumb Zone**: Hold-to-Draw bow trigger with radial draw tension gauge, fine-aim drag, Cancel Shot button, Crouch toggle, and Center View button.
 - **Viewport Swipe**: Swipe anywhere outside controls to look around (configurable in Calibration settings).
 
-### VR Headset (WebXR)
-- Click **Enter VR Headset** to launch WebXR stereo mode with tracked dual controllers, controller-driven nocking/drawing, and diegetic HUD telemetry.
+### VR Headset (WebXR — Hands-First & Controllers)
+- Click **Enter VR Headset** to launch WebXR stereo mode with diegetic bow-mounted telemetry.
+- **Hands-First (Controllerless `XRHand` Mode)**:
+  - **Thumb + Index Pinch (Draw Hand)**: Draw and release the bowstring; pull back to adjust tension.
+  - **Thumb + Middle Pinch**: Project a parabolic floor teleport arc and release to teleport across the arena.
+  - **Thumb + Ring Pinch (Left / Right Hand)**: Snap-turn `-35°` / `+35°`.
+  - **Over-Shoulder Quiver Reach + Pinch**: Reach behind your shoulder/head and pinch to cycle arrow types.
+  - **Palm-Up Wrist Menu**: Rotate bow-hand palm upward and poke `ARROW`, `CROUCH`, or `PAUSE` with your opposite index fingertip.
+- **Dual Controllers**: Smooth locomotion (Left Stick), Sprint (Left Grip / Stick Click), Smooth Turn (Right Stick), Draw (Trigger), Arrow Cycle (`A`/`X`), Crouch (`B`).
 
 ---
 
 ## Included Unity C# Scripts (`src/data/unityScripts.ts`)
 
-The in-app **Unity C# Inspector** includes 28 ready-to-adapt C# files under `namespace MetaQuestArchery`:
+The in-app **Unity C# Inspector** includes 29 ready-to-adapt C# files under `namespace MetaQuestArchery`:
 
 1. `ArrowTypeData.cs`
 2. `VRArrowQuiverInventory.cs`
@@ -80,6 +87,7 @@ The in-app **Unity C# Inspector** includes 28 ready-to-adapt C# files under `nam
 26. `VrHapticController.cs`
 27. `VrHapticAndAudio.cs`
 28. `BowStaminaController.cs`
+29. `XRHandBowInputController.cs`
 
 ---
 

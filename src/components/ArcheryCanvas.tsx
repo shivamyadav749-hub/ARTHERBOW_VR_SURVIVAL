@@ -29,7 +29,7 @@ import {
   createVRBowModel,
   groundHeightAt,
 } from '../three/proceduralModels';
-import { createWebXRRig, WebXRRigHandle } from '../three/webxrVrRig';
+import { createWebXRRig, VRTeleportBounds, WebXRRigHandle } from '../three/webxrVrRig';
 import { getLevelConcurrentLimit, getLevelEnemyLimit } from '../data/campaignLevels';
 import { soundEngine } from '../audio/soundEngine';
 
@@ -56,6 +56,7 @@ interface ArcheryCanvasProps {
   onVrStateChange?: (isInVr: boolean) => void;
   onSelectArrowFromVr?: (arrowType: ArrowTypeId) => void;
   onVrOutcomeAction?: () => void;
+  onVrTogglePause?: () => void;
   onScoreHit: (
     points: number,
     ringLabel: string,
@@ -261,6 +262,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
   onVrStateChange,
   onSelectArrowFromVr,
   onVrOutcomeAction,
+  onVrTogglePause,
   onScoreHit,
   onEnemyDefeated,
   onEnemySpawned,
@@ -298,6 +300,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     onVrStateChange,
     onSelectArrowFromVr,
     onVrOutcomeAction,
+    onVrTogglePause,
     onScoreHit,
     onEnemyDefeated,
     onEnemySpawned,
@@ -326,6 +329,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       onVrStateChange,
       onSelectArrowFromVr,
       onVrOutcomeAction,
+      onVrTogglePause,
       onScoreHit,
       onEnemyDefeated,
       onEnemySpawned,
@@ -352,6 +356,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     onVrStateChange,
     onSelectArrowFromVr,
     onVrOutcomeAction,
+    onVrTogglePause,
     onScoreHit,
     onEnemyDefeated,
     onEnemySpawned,
@@ -1138,6 +1143,14 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       frameId = window.setTimeout(poll, 5);
     }
 
+    const vrTeleportBounds: VRTeleportBounds = {
+      minX: -8.6,
+      maxX: 8.6,
+      minZ: finishLineZ - 3.0,
+      maxZ: startLineZ + 2.2,
+      getGroundY: groundHeightAt,
+    };
+
     function tick() {
       const rawDt = clock.getDelta();
       const dt = Math.min(rawDt, 0.05);
@@ -1166,20 +1179,26 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         damageFlashRef.current.style.opacity = damageFlashAlpha.toFixed(3);
       }
 
-      // A. Camera, 3D Locomotion (Desktop WASD + WebXR VR Controllers) & Diegetic VR Rig
+      // A. Camera, 3D Locomotion (Desktop WASD + WebXR VR Controllers & Hands-First XRHand) & Diegetic VR Rig
       let isMoving = false;
       let isSprinting = false;
-      const vrFrame = vrRig.pollVRInput(currentState.calibration.dominantEye);
+      const vrFrame = vrRig.pollVRInput(currentState.calibration.dominantEye, vrTeleportBounds);
 
       if (vrFrame.presenting) {
-        // WebXR Headset + Dual Controller Mode
+        // WebXR Headset + Hands-First / Dual Controller Mode
         bowHandle.group.visible = currentState.gameState === 'playing';
 
         if (vrFrame.cycleArrowJustPressed) {
           const curIdx = ARROW_TYPE_LIST.findIndex((a) => a.id === currentState.selectedArrowType);
           const nextArrow = ARROW_TYPE_LIST[(curIdx + 1) % ARROW_TYPE_LIST.length].id;
           stateRef.current.onSelectArrowFromVr?.(nextArrow);
-          vrRig.pulseHaptic('bow', 0.25, 35);
+          if (!vrFrame.bowHandTracking) {
+            vrRig.pulseHaptic('bow', 0.25, 35);
+          }
+        }
+
+        if (vrFrame.wristMenuPauseJustPressed) {
+          stateRef.current.onVrTogglePause?.();
         }
 
         if (vrFrame.anyTriggerJustPressed && currentState.gameState !== 'playing') {
@@ -1196,6 +1215,9 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
 
           if (Math.abs(vrFrame.turnX) > 0.01) {
             vrRig.playerRig.rotation.y -= vrFrame.turnX * 2.05 * dt;
+          }
+          if (vrFrame.snapTurnDegrees !== 0) {
+            vrRig.playerRig.rotation.y -= THREE.MathUtils.degToRad(vrFrame.snapTurnDegrees);
           }
 
           const hasMoveInput =
@@ -1241,6 +1263,12 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
           finishLineZ - 3.2,
           startLineZ + 2.4
         );
+        if (currentState.gameState === 'playing' && vrFrame.teleportJustCommitted && vrFrame.teleportTarget) {
+          nextPx = THREE.MathUtils.clamp(vrFrame.teleportTarget.x, -8.6, 8.6);
+          nextPz = THREE.MathUtils.clamp(vrFrame.teleportTarget.z, finishLineZ - 3.0, startLineZ + 2.2);
+          playerVelX = 0;
+          playerVelZ = 0;
+        }
         for (let c = 0; c < coverObstacles.length; c++) {
           const res = resolveCircleRectPushout(nextPx, nextPz, 0.44, coverObstacles[c]);
           nextPx = res.x;
