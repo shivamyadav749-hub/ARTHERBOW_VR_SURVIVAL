@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Code2,
   Coins,
   Compass,
@@ -13,6 +16,7 @@ import {
   Layers,
   Pause,
   Play,
+  Radar,
   RotateCcw,
   Shield,
   Skull,
@@ -138,6 +142,7 @@ export default function App() {
   const [showTrajectoryArc, setShowTrajectoryArc] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isDockCollapsed, setIsDockCollapsed] = useState<boolean>(false);
+  const [isRadarCollapsed, setIsRadarCollapsed] = useState<boolean>(false);
   const [isScriptModalOpen, setIsScriptModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isLevelModalOpen, setIsLevelModalOpen] = useState<boolean>(false);
@@ -203,6 +208,9 @@ export default function App() {
     distanceToFinishMeters: 26,
     routeProgressPct: 0,
     crossedFinishLine: false,
+    radarBlips: [],
+    radarWalls: [],
+    behindWallAlertCount: 0,
   });
 
   const [lastHitSummary, setLastHitSummary] = useState<{
@@ -266,6 +274,9 @@ export default function App() {
         distanceToFinishMeters: 26,
         routeProgressPct: 0,
         crossedFinishLine: false,
+        radarBlips: [],
+        radarWalls: [],
+        behindWallAlertCount: 0,
       }));
       setLastHitSummary({
         ring: `Wave ${clamped}: ${nextCfg.title}`,
@@ -983,84 +994,394 @@ export default function App() {
               </div>
             </div>
 
-            {/* Top-Right Quick Action Cluster */}
-            <div className="flex flex-col sm:flex-row flex-wrap items-end sm:items-center justify-end gap-1.5 sm:gap-2 pointer-events-auto shrink-0">
-              <div className="flex items-center gap-1.5 sm:gap-2">
-                <button
-                  onClick={handleToggleTouchControls}
-                  className={`flex items-center gap-1.5 p-2 md:px-3 md:py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
-                    mobileControlsActive
-                      ? 'text-sky-300 bg-sky-950/70 border-sky-400/50'
-                      : 'text-slate-300 bg-[#0B101B]/90 hover:bg-[#162033] border-white/15'
-                  }`}
-                  title="Toggle On-Screen Mobile Touch Controls"
-                  aria-label="Toggle Touch Controls"
-                >
-                  <Gamepad2 className="w-4 h-4" />
-                  <span className="hidden md:inline">{mobileControlsActive ? 'Touch On' : 'Touch Off'}</span>
-                </button>
+            {/* Top-Right Quick Action Cluster + Tactical Safety-Wall & Ambush Radar */}
+            <div className="flex flex-col items-end gap-1.5 sm:gap-2 pointer-events-none shrink-0">
+              <div className="flex flex-col sm:flex-row flex-wrap items-end sm:items-center justify-end gap-1.5 sm:gap-2 pointer-events-auto">
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button
+                    onClick={handleToggleTouchControls}
+                    className={`flex items-center gap-1.5 p-2 md:px-3 md:py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                      mobileControlsActive
+                        ? 'text-sky-300 bg-sky-950/70 border-sky-400/50'
+                        : 'text-slate-300 bg-[#0B101B]/90 hover:bg-[#162033] border-white/15'
+                    }`}
+                    title="Toggle On-Screen Mobile Touch Controls"
+                    aria-label="Toggle Touch Controls"
+                  >
+                    <Gamepad2 className="w-4 h-4" />
+                    <span className="hidden md:inline">{mobileControlsActive ? 'Touch On' : 'Touch Off'}</span>
+                  </button>
 
-                <button
-                  onClick={handleEnterOrExitVR}
-                  className={`hidden sm:flex items-center gap-2 p-2 md:px-3.5 md:py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
-                    isInVr
-                      ? 'text-rose-200 bg-rose-950/90 border-rose-400/50'
-                      : vrSupported
-                      ? 'text-emerald-300 bg-emerald-950/80 hover:bg-emerald-900 border-emerald-400/50'
-                      : 'text-sky-200 bg-[#0B101B]/90 hover:bg-[#162033] border-sky-400/40'
-                  }`}
-                  aria-label={isInVr ? 'Exit VR' : 'Enter VR'}
-                >
-                  <Glasses className="w-4 h-4 text-emerald-400" />
-                  <span className="hidden md:inline">{isInVr ? 'Exit VR' : 'Enter VR'}</span>
-                </button>
+                  <button
+                    onClick={handleEnterOrExitVR}
+                    className={`hidden sm:flex items-center gap-2 p-2 md:px-3.5 md:py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                      isInVr
+                        ? 'text-rose-200 bg-rose-950/90 border-rose-400/50'
+                        : vrSupported
+                        ? 'text-emerald-300 bg-emerald-950/80 hover:bg-emerald-900 border-emerald-400/50'
+                        : 'text-sky-200 bg-[#0B101B]/90 hover:bg-[#162033] border-sky-400/40'
+                    }`}
+                    aria-label={isInVr ? 'Exit VR' : 'Enter VR'}
+                  >
+                    <Glasses className="w-4 h-4 text-emerald-400" />
+                    <span className="hidden md:inline">{isInVr ? 'Exit VR' : 'Enter VR'}</span>
+                  </button>
 
-                <button
-                  onClick={() => setGameState(gameState === 'paused' ? 'playing' : 'paused')}
-                  className="p-2 text-slate-200 hover:text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/15 rounded-lg transition-colors cursor-pointer"
-                  aria-label="Pause Game"
-                >
-                  <Pause className="w-4 h-4" />
-                </button>
+                  <button
+                    onClick={() => setGameState(gameState === 'paused' ? 'playing' : 'paused')}
+                    className="p-2 text-slate-200 hover:text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/15 rounded-lg transition-colors cursor-pointer"
+                    aria-label="Pause Game"
+                  >
+                    <Pause className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button
+                    onClick={() => setIsArmoryModalOpen(true)}
+                    className="flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-amber-300 bg-[#0B101B]/90 hover:bg-[#162033] border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    aria-label="Open Armory"
+                  >
+                    <Shield className="w-4 h-4 text-amber-400" />
+                    <span className="hidden md:inline">Armory [I]</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsLevelModalOpen(true)}
+                    className="hidden sm:flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    aria-label="Open Levels"
+                  >
+                    <Layers className="w-4 h-4 text-sky-400" />
+                    <span className="hidden md:inline">Levels [L]</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsSettingsModalOpen(true)}
+                    className="flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-emerald-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    aria-label="Open Calibration & Settings"
+                  >
+                    <Sliders className="w-4 h-4 text-emerald-400" />
+                    <span className="hidden md:inline">Calibration [K]</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsScriptModalOpen(true)}
+                    className="hidden sm:flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-sky-400/50 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    aria-label="Inspect Unity C# Scripts"
+                  >
+                    <Code2 className="w-4 h-4 text-sky-400" />
+                    <span className="hidden md:inline">Unity C# [C]</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center gap-1.5 sm:gap-2">
-                <button
-                  onClick={() => setIsArmoryModalOpen(true)}
-                  className="flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-amber-300 bg-[#0B101B]/90 hover:bg-[#162033] border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-                  aria-label="Open Armory"
-                >
-                  <Shield className="w-4 h-4 text-amber-400" />
-                  <span className="hidden md:inline">Armory [I]</span>
-                </button>
+              {/* Tactical Safety-Wall & Ambush Radar */}
+              {gameState === 'playing' && (() => {
+                const RADAR_RANGE_M = 26;
+                const RADAR_RADIUS_PX = 47;
+                const RADAR_CENTER = 60;
+                const scale = RADAR_RADIUS_PX / RADAR_RANGE_M;
 
-                <button
-                  onClick={() => setIsLevelModalOpen(true)}
-                  className="hidden sm:flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-                  aria-label="Open Levels"
-                >
-                  <Layers className="w-4 h-4 text-sky-400" />
-                  <span className="hidden md:inline">Levels [L]</span>
-                </button>
+                const alertBlips = telemetry.radarBlips.filter(
+                  (b) => b.behindSafetyWall || b.isAmbush
+                );
+                const nearestAlert = alertBlips
+                  .slice()
+                  .sort((a, b) => a.distanceMeters - b.distanceMeters)[0];
 
-                <button
-                  onClick={() => setIsSettingsModalOpen(true)}
-                  className="flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-emerald-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-                  aria-label="Open Calibration & Settings"
-                >
-                  <Sliders className="w-4 h-4 text-emerald-400" />
-                  <span className="hidden md:inline">Calibration [K]</span>
-                </button>
+                let rearArc = false;
+                let leftArc = false;
+                let rightArc = false;
+                let frontArc = false;
 
-                <button
-                  onClick={() => setIsScriptModalOpen(true)}
-                  className="hidden sm:flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-sky-400/50 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-                  aria-label="Inspect Unity C# Scripts"
-                >
-                  <Code2 className="w-4 h-4 text-sky-400" />
-                  <span className="hidden md:inline">Unity C# [C]</span>
-                </button>
-              </div>
+                for (let i = 0; i < alertBlips.length; i++) {
+                  const deg = Math.atan2(alertBlips[i].relX, alertBlips[i].relZ) * (180 / Math.PI);
+                  if (Math.abs(deg) >= 135) rearArc = true;
+                  else if (deg > 45) rightArc = true;
+                  else if (deg < -45) leftArc = true;
+                  else frontArc = true;
+                }
+
+                const nearestBearingLabel = nearestAlert
+                  ? (() => {
+                      const deg =
+                        Math.atan2(nearestAlert.relX, nearestAlert.relZ) * (180 / Math.PI);
+                      if (Math.abs(deg) >= 135) return 'REAR';
+                      if (deg > 45) return 'RIGHT WALL';
+                      if (deg < -45) return 'LEFT WALL';
+                      return 'BEHIND WALL';
+                    })()
+                  : '';
+
+                const nearestWeaponShort = nearestAlert
+                  ? nearestAlert.weaponType === 'bow'
+                    ? 'Bow'
+                    : nearestAlert.weaponType === 'halberd'
+                    ? 'Halberd'
+                    : 'Bhala'
+                  : '';
+
+                const sortedBlips = telemetry.radarBlips
+                  .slice()
+                  .sort((a, b) => {
+                    const aAlert = a.behindSafetyWall || a.isAmbush ? 1 : 0;
+                    const bAlert = b.behindSafetyWall || b.isAmbush ? 1 : 0;
+                    return aAlert - bAlert;
+                  });
+
+                return (
+                  <div
+                    className={`pointer-events-auto bg-[#0B101B]/90 rounded-xl border shadow-xl transition-colors ${
+                      telemetry.behindWallAlertCount > 0
+                        ? 'border-rose-500/65'
+                        : 'border-white/15'
+                    } ${isRadarCollapsed ? 'px-2.5 py-1.5' : 'w-[122px] sm:w-[154px] p-2 sm:p-2.5'}`}
+                    aria-label="Tactical Safety-Wall and Ambush Radar"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <div className="flex items-center gap-1 min-w-0">
+                        {telemetry.behindWallAlertCount > 0 ? (
+                          <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                        ) : (
+                          <Radar className="w-3 h-3 text-sky-400 shrink-0" />
+                        )}
+                        <span
+                          className={`text-[10px] font-mono font-bold tracking-wide truncate tabular-nums ${
+                            telemetry.behindWallAlertCount > 0 ? 'text-rose-300' : 'text-slate-200'
+                          }`}
+                        >
+                          {telemetry.behindWallAlertCount > 0
+                            ? `${telemetry.behindWallAlertCount} BEHIND WALL`
+                            : `${telemetry.radarBlips.length} TRACKED`}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setIsRadarCollapsed((prev) => !prev)}
+                        className="p-0.5 text-slate-400 hover:text-white rounded cursor-pointer shrink-0"
+                        aria-label={isRadarCollapsed ? 'Expand Tactical Radar' : 'Collapse Tactical Radar'}
+                      >
+                        {isRadarCollapsed ? (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+
+                    {isRadarCollapsed ? (
+                      nearestAlert && (
+                        <div className="mt-0.5 text-[9px] font-mono font-semibold text-rose-300 tabular-nums whitespace-nowrap">
+                          {nearestBearingLabel} · {nearestAlert.distanceMeters.toFixed(1)}m
+                        </div>
+                      )
+                    ) : (
+                      <>
+                        <div className="relative mt-1.5 flex items-center justify-center">
+                          <svg
+                            viewBox="0 0 120 120"
+                            className="w-[92px] h-[92px] sm:w-[120px] sm:h-[120px] overflow-visible"
+                            role="img"
+                            aria-label="360 degree enemy and safety-wall radar"
+                          >
+                            {/* Outer Dark Scope Base */}
+                            <circle
+                              cx={RADAR_CENTER}
+                              cy={RADAR_CENTER}
+                              r={51}
+                              fill="#070B12"
+                              stroke="rgba(255,255,255,0.14)"
+                              strokeWidth="1.2"
+                            />
+
+                            {/* Inner Range Ring (13m) */}
+                            <circle
+                              cx={RADAR_CENTER}
+                              cy={RADAR_CENTER}
+                              r={25.5}
+                              fill="none"
+                              stroke="rgba(148,163,184,0.16)"
+                              strokeWidth="0.9"
+                              strokeDasharray="2.5 2.5"
+                            />
+
+                            {/* Crosshair Axes */}
+                            <line
+                              x1={10}
+                              y1={RADAR_CENTER}
+                              x2={110}
+                              y2={RADAR_CENTER}
+                              stroke="rgba(148,163,184,0.14)"
+                              strokeWidth="0.8"
+                            />
+                            <line
+                              x1={RADAR_CENTER}
+                              y1={10}
+                              x2={RADAR_CENTER}
+                              y2={110}
+                              stroke="rgba(148,163,184,0.14)"
+                              strokeWidth="0.8"
+                            />
+
+                            {/* Forward Camera Heading Cone */}
+                            <path
+                              d={`M ${RADAR_CENTER} ${RADAR_CENTER} L 34 17 A 50 50 0 0 1 86 17 Z`}
+                              fill="rgba(56,189,248,0.09)"
+                              stroke="rgba(56,189,248,0.22)"
+                              strokeWidth="0.8"
+                            />
+
+                            {/* Directional Quadrant Threat Sector Arcs for Behind-Wall / Ambush Enemies */}
+                            {frontArc && (
+                              <path
+                                d="M 24.64 24.64 A 50 50 0 0 1 95.36 24.64"
+                                fill="none"
+                                stroke="rgba(244,63,94,0.72)"
+                                strokeWidth="3.2"
+                                strokeLinecap="round"
+                              />
+                            )}
+                            {rightArc && (
+                              <path
+                                d="M 95.36 24.64 A 50 50 0 0 1 95.36 95.36"
+                                fill="none"
+                                stroke="rgba(244,63,94,0.72)"
+                                strokeWidth="3.2"
+                                strokeLinecap="round"
+                              />
+                            )}
+                            {rearArc && (
+                              <path
+                                d="M 95.36 95.36 A 50 50 0 0 1 24.64 95.36"
+                                fill="none"
+                                stroke="rgba(244,63,94,0.88)"
+                                strokeWidth="3.6"
+                                strokeLinecap="round"
+                              />
+                            )}
+                            {leftArc && (
+                              <path
+                                d="M 24.64 95.36 A 50 50 0 0 1 24.64 24.64"
+                                fill="none"
+                                stroke="rgba(244,63,94,0.72)"
+                                strokeWidth="3.2"
+                                strokeLinecap="round"
+                              />
+                            )}
+
+                            {/* Road Safety Walls & Cover Bastions */}
+                            {telemetry.radarWalls.map((wall) => {
+                              const rawX = wall.relX * scale;
+                              const rawY = -wall.relZ * scale;
+                              const d = Math.hypot(rawX, rawY);
+                              if (d > RADAR_RADIUS_PX + 10) return null;
+                              const clampedRatio = d > RADAR_RADIUS_PX ? RADAR_RADIUS_PX / d : 1;
+                              const wx = RADAR_CENTER + rawX * clampedRatio;
+                              const wy = RADAR_CENTER + rawY * clampedRatio;
+                              return (
+                                <rect
+                                  key={wall.id}
+                                  x={wx - 4.5}
+                                  y={wy - 2}
+                                  width={9}
+                                  height={4}
+                                  rx={1}
+                                  fill="#64748B"
+                                  stroke="rgba(245,158,11,0.55)"
+                                  strokeWidth="0.7"
+                                />
+                              );
+                            })}
+
+                            {/* Enemy Blips */}
+                            {sortedBlips.map((blip) => {
+                              const rawX = blip.relX * scale;
+                              const rawY = -blip.relZ * scale;
+                              const d = Math.hypot(rawX, rawY);
+                              const isClamped = d > RADAR_RADIUS_PX;
+                              const factor = isClamped ? RADAR_RADIUS_PX / d : 1;
+                              const bx = RADAR_CENTER + rawX * factor;
+                              const by = RADAR_CENTER + rawY * factor;
+                              const isBehindOrAmbush = blip.behindSafetyWall || blip.isAmbush;
+
+                              if (isBehindOrAmbush) {
+                                return (
+                                  <g key={blip.id}>
+                                    <circle
+                                      cx={bx}
+                                      cy={by}
+                                      r={6.2}
+                                      fill="rgba(244,63,94,0.18)"
+                                      stroke="#FB7185"
+                                      strokeWidth="0.9"
+                                    />
+                                    <polygon
+                                      points={`${bx},${by - 4} ${bx + 4},${by} ${bx},${by + 4} ${bx - 4},${by}`}
+                                      fill="#F43F5E"
+                                      stroke="#FFE4E6"
+                                      strokeWidth="0.75"
+                                    />
+                                  </g>
+                                );
+                              }
+
+                              const dotFill =
+                                blip.weaponType === 'bow' || blip.weaponType === 'javelin'
+                                  ? '#38BDF8'
+                                  : '#F59E0B';
+                              return (
+                                <circle
+                                  key={blip.id}
+                                  cx={bx}
+                                  cy={by}
+                                  r={isClamped ? 2.5 : 3}
+                                  fill={dotFill}
+                                  stroke="#070B12"
+                                  strokeWidth="0.7"
+                                />
+                              );
+                            })}
+
+                            {/* Player Center Chevron (Facing Up) */}
+                            <polygon
+                              points={`${RADAR_CENTER},${RADAR_CENTER - 5.5} ${RADAR_CENTER + 4},${RADAR_CENTER + 4} ${RADAR_CENTER},${RADAR_CENTER + 1.8} ${RADAR_CENTER - 4},${RADAR_CENTER + 4}`}
+                              fill="#38BDF8"
+                              stroke="#E0F2FE"
+                              strokeWidth="0.8"
+                            />
+                          </svg>
+                        </div>
+
+                        {/* Nearest Behind-Wall Threat & Legend Footer */}
+                        <div className="mt-1 pt-1 border-t border-white/10 text-[9px] sm:text-[10px] font-mono tabular-nums">
+                          {nearestAlert ? (
+                            <div className="flex items-center justify-between gap-1 text-rose-300 font-bold">
+                              <span className="truncate">{nearestBearingLabel}</span>
+                              <span className="shrink-0">
+                                {nearestAlert.distanceMeters.toFixed(1)}m · {nearestWeaponShort}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between text-emerald-400 font-semibold">
+                              <span>WALL CLEAR</span>
+                              <span className="text-slate-400">26m</span>
+                            </div>
+                          )}
+                          <div className="hidden sm:flex items-center justify-between gap-2 mt-0.5 text-[9px] text-slate-400">
+                            <span className="inline-flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rotate-45 bg-rose-500 inline-block" />
+                              Ambush/Wall
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <span className="w-2.5 h-1 bg-slate-500 border border-amber-400/60 inline-block rounded-xs" />
+                              Cover
+                            </span>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
 

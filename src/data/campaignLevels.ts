@@ -2,7 +2,9 @@ import {
   ArrowTypeId,
   DifficultyTier,
   EnemyArchetype,
+  EnemySpawnPhase,
   EnemySpawnSpec,
+  EnemyWeaponType,
   LevelConfig,
   SeasonConfig,
 } from '../types/archery';
@@ -227,13 +229,37 @@ function buildEnemySquad(level: number, seasonId: number): EnemySpawnSpec[] {
     // Archetype distribution by season & level
     let archetype: EnemyArchetype = 'shield_hoplite';
     if (level <= 2) {
-      archetype = 'shield_hoplite';
+      archetype = i === 1 && level === 2 ? 'javelineer' : 'shield_hoplite';
     } else if (level >= 25 && (i === Math.floor(enemyCount / 2) || (levelInSeason === 10 && i < 2))) {
       archetype = 'centurion';
     } else if (i % 2 === 1 && level >= 3) {
       archetype = 'javelineer';
     } else {
       archetype = 'shield_hoplite';
+    }
+
+    // Weapon in hand: Hoplites carry War Spear (Bhala), Javelineers mix Dhanus (Bow) & Throwing Bhala, Centurions carry upgraded Halberd
+    const weaponTier = Math.max(1, Math.min(5, seasonId));
+    let weaponType: EnemyWeaponType = 'spear';
+    if (archetype === 'centurion') {
+      weaponType = 'halberd';
+    } else if (archetype === 'javelineer') {
+      weaponType = (i + level) % 2 === 0 ? 'bow' : 'javelin';
+    } else {
+      weaponType = 'spear';
+    }
+
+    // Staged spawning: some enemies appear at the start, others ambush suddenly from behind road safety walls as player advances toward finish line
+    const initialCount = level === 1 ? 2 : Math.min(3, Math.ceil(enemyCount * 0.5));
+    let spawnPhase: EnemySpawnPhase = 'initial';
+    if (i >= initialCount) {
+      const ambushIdx = i - initialCount;
+      spawnPhase =
+        ambushIdx % 3 === 0
+          ? 'ambush_wall'
+          : ambushIdx % 3 === 1
+          ? 'ambush_mid'
+          : 'ambush_finish';
     }
 
     // Only introduce raised shields gradually (Lv 1-2 have no shields so players learn aiming first!)
@@ -255,21 +281,26 @@ function buildEnemySquad(level: number, seasonId: number): EnemySpawnSpec[] {
         ? 1.9 + progress * 1.45
         : 1.35 + progress * 0.7;
 
+    // Weapon & Shield damage scales up cleanly with level/weaponTier
+    const tierDamageBonus = (weaponTier - 1) * 2.5 + (weaponType === 'halberd' ? 4 : weaponType === 'bow' ? 2 : 0);
     const attackDamage =
       archetype === 'centurion'
-        ? Math.round(18 + progress * 16)
+        ? Math.round(18 + progress * 16 + tierDamageBonus)
         : archetype === 'shield_hoplite'
-        ? Math.round(11 + progress * 13)
-        : Math.round(9 + progress * 12);
+        ? Math.round(11 + progress * 13 + tierDamageBonus)
+        : Math.round(9 + progress * 12 + tierDamageBonus);
 
     const attackCooldown =
       archetype === 'javelineer'
-        ? Number((4.8 - progress * 1.7).toFixed(2))
-        : Number((2.6 - progress * 0.9).toFixed(2));
+        ? Number(Math.max(2.1, 4.6 - progress * 1.8 - (weaponTier - 1) * 0.15).toFixed(2))
+        : Number(Math.max(1.4, 2.6 - progress * 0.9 - (weaponTier - 1) * 0.08).toFixed(2));
 
     specs.push({
       id: i + 1,
       archetype,
+      weaponType,
+      weaponTier,
+      spawnPhase,
       x: Math.max(-7.2, Math.min(7.2, laneX)),
       z: -spawnDist,
       maxHp: Math.round(baseHp / 5) * 5,

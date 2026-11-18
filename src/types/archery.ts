@@ -181,6 +181,10 @@ export type DifficultyTier = 'Easy' | 'Moderate' | 'Challenging' | 'Hard' | 'Mas
 
 export type EnemyArchetype = 'shield_hoplite' | 'javelineer' | 'centurion';
 
+export type EnemyWeaponType = 'spear' | 'bow' | 'javelin' | 'halberd';
+
+export type EnemySpawnPhase = 'initial' | 'ambush_wall' | 'ambush_mid' | 'ambush_finish';
+
 export type HitboxZone = 'head' | 'torso' | 'limb' | 'shield';
 
 export const HITBOX_MULTIPLIERS: Record<HitboxZone, number> = {
@@ -215,6 +219,9 @@ export interface SeasonConfig {
 export interface EnemySpawnSpec {
   id: number;
   archetype: EnemyArchetype;
+  weaponType: EnemyWeaponType;
+  weaponTier: number; // 1..5 upgraded by level/season
+  spawnPhase: EnemySpawnPhase;
   x: number;
   z: number;
   maxHp: number;
@@ -260,6 +267,23 @@ export interface ScorePopup {
   detailText?: string;
 }
 
+export interface RadarBlip {
+  id: number;
+  relX: number; // + right, - left relative to player view (meters)
+  relZ: number; // + ahead, - behind relative to player view (meters)
+  distanceMeters: number;
+  archetype: EnemyArchetype;
+  weaponType: EnemyWeaponType;
+  behindSafetyWall: boolean;
+  isAmbush: boolean;
+}
+
+export interface RadarWallMarker {
+  id: string;
+  relX: number;
+  relZ: number;
+}
+
 export interface LiveBallisticsTelemetry {
   drawPercent: number;
   drawLengthMeters: number;
@@ -271,6 +295,9 @@ export interface LiveBallisticsTelemetry {
   distanceToFinishMeters: number;
   routeProgressPct: number;
   crossedFinishLine: boolean;
+  radarBlips: RadarBlip[];
+  radarWalls: RadarWallMarker[];
+  behindWallAlertCount: number;
 }
 
 export type MobileControlMode = 'auto' | 'on' | 'off';

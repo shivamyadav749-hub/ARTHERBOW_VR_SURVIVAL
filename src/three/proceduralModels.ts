@@ -4,6 +4,7 @@ import {
   ArrowTypeId,
   EnemyArchetype,
   EnemySpawnSpec,
+  EnemyWeaponType,
   HitboxZone,
   ImpactMaterial,
 } from '../types/archery';
@@ -1822,12 +1823,14 @@ export type EnemyAIState =
 export interface ArmoredEnemyEntity {
   id: number;
   archetype: EnemyArchetype;
+  weaponType: EnemyWeaponType;
+  weaponTier: number;
   rootGroup: THREE.Group;
   bodyPivot: THREE.Group;
   leftLegPivot: THREE.Group;
   rightLegPivot: THREE.Group;
-  leftArmPivot: THREE.Group; // Holds Shield
-  rightArmPivot: THREE.Group; // Holds Weapon / Javelin
+  leftArmPivot: THREE.Group; // Holds Shield or Dhanus Bow
+  rightArmPivot: THREE.Group; // Holds Bhala Spear / Javelin / Halberd / Drawn Arrow
   shieldMesh: THREE.Mesh | null;
   javelinTipGlowMat: THREE.MeshStandardMaterial | null;
   frostCageGroup: THREE.Group;
@@ -2006,7 +2009,51 @@ export function createArmoredEnemyModel(spec: EnemySpawnSpec): ArmoredEnemyEntit
     headGroup.add(plume);
   }
 
-  // Left Arm + Shield (Compact realistic guard so Chest/Shoulders/Head stay targetable!)
+  const weaponTier = Math.max(1, Math.min(5, spec.weaponTier || 1));
+  const weaponType: EnemyWeaponType =
+    spec.weaponType ||
+    (spec.archetype === 'centurion'
+      ? 'halberd'
+      : spec.archetype === 'javelineer'
+      ? 'javelin'
+      : 'spear');
+
+  const tierPalettes: Record<
+    number,
+    { shaft: number; blade: number; trim: number; glow: number; emissiveInt: number }
+  > = {
+    1: { shaft: 0x6b4226, blade: 0xcbd5e1, trim: 0xb45309, glow: 0xd97706, emissiveInt: 0.2 },
+    2: { shaft: 0x5c3a21, blade: 0xe2e8f0, trim: 0xf59e0b, glow: 0xfbbf24, emissiveInt: 0.35 },
+    3: { shaft: 0x3f2318, blade: 0xf8fafc, trim: 0xdc2626, glow: 0xf97316, emissiveInt: 0.55 },
+    4: { shaft: 0x1e293b, blade: 0xe0f2fe, trim: 0x38bdf8, glow: 0x22d3ee, emissiveInt: 0.8 },
+    5: { shaft: 0x1e1b4b, blade: 0xfef08a, trim: 0xfacc15, glow: 0xfde047, emissiveInt: 1.05 },
+  };
+  const wPal = tierPalettes[weaponTier] || tierPalettes[1];
+
+  const wShaftMat = new THREE.MeshStandardMaterial({
+    color: wPal.shaft,
+    roughness: 0.72,
+    metalness: weaponTier >= 4 ? 0.35 : 0.08,
+  });
+  const wBladeMat = new THREE.MeshStandardMaterial({
+    color: wPal.blade,
+    metalness: 0.9,
+    roughness: 0.18,
+  });
+  const wTrimMat = new THREE.MeshStandardMaterial({
+    color: wPal.trim,
+    metalness: 0.85,
+    roughness: 0.24,
+  });
+  let javelinTipGlowMat: THREE.MeshStandardMaterial | null = new THREE.MeshStandardMaterial({
+    color: wPal.blade,
+    emissive: wPal.glow,
+    emissiveIntensity: wPal.emissiveInt,
+    metalness: 0.86,
+    roughness: 0.2,
+  });
+
+  // Left Arm + Upgraded Shield OR Dhanus Bow
   const leftArmPivot = new THREE.Group();
   leftArmPivot.position.set(-0.34, 1.42, 0.06);
   const lArmMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.055, 0.48, 8), armorMat);
@@ -2016,32 +2063,95 @@ export function createArmoredEnemyModel(spec: EnemySpawnSpec): ArmoredEnemyEntit
   leftArmPivot.add(lArmMesh);
 
   let shieldMesh: THREE.Mesh | null = null;
-  if (spec.hasShield) {
+  if (spec.hasShield && weaponType !== 'bow') {
     if (spec.archetype === 'centurion') {
-      shieldMesh = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.68, 0.06), shieldMat);
-      shieldMesh.position.set(0.08, -0.26, 0.34);
+      const shieldW = 0.42 + (weaponTier - 1) * 0.025;
+      const shieldH = 0.68 + (weaponTier - 1) * 0.03;
+      shieldMesh = new THREE.Mesh(new THREE.BoxGeometry(shieldW, shieldH, 0.06), shieldMat);
+      shieldMesh.position.set(0.08, -0.24, 0.34);
+
+      const frame = new THREE.Mesh(
+        new THREE.BoxGeometry(shieldW + 0.05, shieldH + 0.05, 0.03),
+        wTrimMat
+      );
+      frame.position.z = -0.01;
+      shieldMesh.add(frame);
     } else {
+      const shieldRad = 0.29 + (weaponTier - 1) * 0.02;
       shieldMesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.3, 0.3, 0.05, 20).rotateX(Math.PI / 2),
+        new THREE.CylinderGeometry(shieldRad, shieldRad, 0.05, 22).rotateX(Math.PI / 2),
         shieldMat
       );
       shieldMesh.position.set(0.06, -0.24, 0.32);
+
+      // Level-upgraded rim ring on shield
+      if (weaponTier >= 2) {
+        const rimRing = new THREE.Mesh(
+          new THREE.TorusGeometry(shieldRad - 0.01, 0.018, 8, 22),
+          wTrimMat
+        );
+        rimRing.position.z = 0.024;
+        shieldMesh.add(rimRing);
+      }
     }
     shieldMesh.castShadow = true;
     const boss = new THREE.Mesh(
-      new THREE.SphereGeometry(0.09, 12, 10),
-      new THREE.MeshStandardMaterial({ color: 0xfacc15, metalness: 0.9, roughness: 0.2 })
+      new THREE.SphereGeometry(0.085 + weaponTier * 0.008, 12, 10),
+      wTrimMat
     );
-    boss.scale.z = 0.5;
+    boss.scale.z = 0.55;
     boss.position.z = 0.035;
     shieldMesh.add(boss);
 
+    if (weaponTier >= 3) {
+      const bossSpike = new THREE.Mesh(
+        new THREE.ConeGeometry(0.032, 0.1 + weaponTier * 0.015, 8).rotateX(Math.PI / 2),
+        weaponTier >= 4 ? javelinTipGlowMat : wBladeMat
+      );
+      bossSpike.position.z = 0.075;
+      shieldMesh.add(bossSpike);
+    }
+
     registerHitbox(shieldMesh, 'shield', 'metal');
     leftArmPivot.add(shieldMesh);
+  } else if (weaponType === 'bow') {
+    // Enemy Archer holds an upgraded Dhanus (Curved War Bow) upright in Left Hand
+    const bowGroup = new THREE.Group();
+    bowGroup.position.set(0.14, -0.14, 0.38);
+    bowGroup.rotation.z = 0.18;
+
+    const riser = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.28, 8), wShaftMat);
+    bowGroup.add(riser);
+
+    [-1, 1].forEach((side) => {
+      const limb = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.012, 0.02, 0.44, 8),
+        weaponTier >= 3 ? wTrimMat : wShaftMat
+      );
+      limb.position.set(0, side * 0.31, -0.07);
+      limb.rotation.x = side * 0.36;
+      bowGroup.add(limb);
+
+      const nockTip = new THREE.Mesh(
+        new THREE.SphereGeometry(0.022, 8, 8),
+        weaponTier >= 4 ? javelinTipGlowMat! : wTrimMat
+      );
+      nockTip.position.set(0, side * 0.5, -0.16);
+      bowGroup.add(nockTip);
+    });
+
+    const bowString = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.004, 0.004, 0.98, 6),
+      new THREE.MeshBasicMaterial({ color: weaponTier >= 4 ? wPal.glow : 0xe2e8f0 })
+    );
+    bowString.position.set(0, 0, -0.16);
+    bowGroup.add(bowString);
+
+    leftArmPivot.add(bowGroup);
   }
   bodyPivot.add(leftArmPivot);
 
-  // Right Arm + Spear / Javelin / Gladius
+  // Right Arm + Level-Upgraded Hand Weapon (Bhala Spear / Halberd / Throwing Javelin / Drawn Bow Arrow)
   const rightArmPivot = new THREE.Group();
   rightArmPivot.position.set(0.32, 1.44, 0.04);
   const rArmMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.055, 0.48, 8), armorMat);
@@ -2050,34 +2160,100 @@ export function createArmoredEnemyModel(spec: EnemySpawnSpec): ArmoredEnemyEntit
   registerHitbox(rArmMesh, 'limb', 'metal');
   rightArmPivot.add(rArmMesh);
 
-  let javelinTipGlowMat: THREE.MeshStandardMaterial | null = null;
-  if (spec.archetype === 'javelineer') {
-    const shaft = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.018, 0.018, 1.35, 8).rotateX(Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: 0x5c3a21, roughness: 0.85 })
+  if (weaponType === 'bow') {
+    // Nocked glowing arrow ready in right drawing hand
+    const arrowShaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.011, 0.82, 8).rotateX(Math.PI / 2),
+      wShaftMat
     );
-    shaft.position.set(0, -0.12, 0.45);
-    javelinTipGlowMat = new THREE.MeshStandardMaterial({
-      color: 0xfef08a,
-      emissive: 0xf97316,
-      emissiveIntensity: 0.4,
-      metalness: 0.85,
-      roughness: 0.2,
-    });
-    const tip = new THREE.Mesh(
-      new THREE.ConeGeometry(0.04, 0.16, 8).rotateX(Math.PI / 2),
+    arrowShaft.position.set(-0.08, -0.14, 0.34);
+    const arrowHead = new THREE.Mesh(
+      new THREE.ConeGeometry(0.028, 0.12, 8).rotateX(Math.PI / 2),
       javelinTipGlowMat
     );
-    tip.position.z = 0.72;
-    shaft.add(tip);
-    rightArmPivot.add(shaft);
-  } else {
-    const blade = new THREE.Mesh(
-      new THREE.BoxGeometry(0.055, 0.02, 0.72),
-      new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.92, roughness: 0.18 })
+    arrowHead.position.z = 0.44;
+    arrowShaft.add(arrowHead);
+    rightArmPivot.add(arrowShaft);
+  } else if (weaponType === 'halberd') {
+    // Centurion Upgraded Halberd / Imperial Trident Bhala
+    const poleLen = 1.65 + weaponTier * 0.06;
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.024, poleLen, 10).rotateX(Math.PI / 2),
+      wShaftMat
     );
-    blade.position.set(0, -0.2, 0.46);
-    rightArmPivot.add(blade);
+    pole.position.set(0, -0.14, 0.48);
+
+    const collar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.036, 0.032, 0.12, 10).rotateX(Math.PI / 2),
+      wTrimMat
+    );
+    collar.position.z = poleLen * 0.46;
+    pole.add(collar);
+
+    const spearTip = new THREE.Mesh(
+      new THREE.ConeGeometry(0.048, 0.26, 8).rotateX(Math.PI / 2),
+      weaponTier >= 4 ? javelinTipGlowMat : wBladeMat
+    );
+    spearTip.position.z = poleLen * 0.56;
+    pole.add(spearTip);
+
+    const axeBlade = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24 + weaponTier * 0.02, 0.026, 0.18),
+      wBladeMat
+    );
+    axeBlade.position.set(0.08, 0, poleLen * 0.44);
+    pole.add(axeBlade);
+
+    if (weaponTier >= 3) {
+      const backSpike = new THREE.Mesh(
+        new THREE.ConeGeometry(0.028, 0.14, 6).rotateZ(Math.PI / 2),
+        wTrimMat
+      );
+      backSpike.position.set(-0.09, 0, poleLen * 0.44);
+      pole.add(backSpike);
+    }
+
+    rightArmPivot.add(pole);
+  } else {
+    // War Spear (Bhala) for Hoplites OR Throwing Javelin (Bhala) for Javelineers
+    const isJavelin = weaponType === 'javelin';
+    const shaftLen = isJavelin ? 1.38 + weaponTier * 0.04 : 1.52 + weaponTier * 0.05;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.017, 0.019, shaftLen, 8).rotateX(Math.PI / 2),
+      wShaftMat
+    );
+    shaft.position.set(0, -0.14, 0.46);
+
+    const guardRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.03, 0.026, 0.07, 10).rotateX(Math.PI / 2),
+      wTrimMat
+    );
+    guardRing.position.z = shaftLen * 0.46;
+    shaft.add(guardRing);
+
+    const tip = new THREE.Mesh(
+      new THREE.ConeGeometry(0.04 + weaponTier * 0.004, 0.18 + weaponTier * 0.02, 8).rotateX(Math.PI / 2),
+      isJavelin || weaponTier >= 4 ? javelinTipGlowMat : wBladeMat
+    );
+    tip.position.z = shaftLen * 0.54;
+    shaft.add(tip);
+
+    // Side barbs on Tier 2+ spears/bhala
+    if (weaponTier >= 2) {
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.016, 0.08), wTrimMat);
+      wing.position.z = shaftLen * 0.47;
+      shaft.add(wing);
+    }
+
+    // Counterweight butt spike
+    const buttCap = new THREE.Mesh(
+      new THREE.ConeGeometry(0.022, 0.08, 6).rotateX(-Math.PI / 2),
+      wTrimMat
+    );
+    buttCap.position.z = -shaftLen * 0.52;
+    shaft.add(buttCap);
+
+    rightArmPivot.add(shaft);
   }
   bodyPivot.add(rightArmPivot);
 
@@ -2118,11 +2294,17 @@ export function createArmoredEnemyModel(spec: EnemySpawnSpec): ArmoredEnemyEntit
   }
   rootGroup.add(frostCageGroup);
 
-  const maxShieldHp = spec.hasShield ? (spec.archetype === 'centurion' ? 140 : 80) : 0;
+  const maxShieldHp = spec.hasShield
+    ? spec.archetype === 'centurion'
+      ? 120 + weaponTier * 30
+      : 70 + weaponTier * 20
+    : 0;
 
   return {
     id: spec.id,
     archetype: spec.archetype,
+    weaponType,
+    weaponTier,
     rootGroup,
     bodyPivot,
     leftLegPivot,
@@ -2143,7 +2325,7 @@ export function createArmoredEnemyModel(spec: EnemySpawnSpec): ArmoredEnemyEntit
     moveSpeed: spec.moveSpeed,
     attackDamage: spec.attackDamage,
     attackCooldown: spec.attackCooldown,
-    attackTimer: 0.8 + (spec.id % 3) * 0.65,
+    attackTimer: 0.7 + (spec.id % 3) * 0.55,
     windupTimer: 0,
     staggerTimer: 0,
     freezeTimer: 0,
@@ -2157,23 +2339,53 @@ export function createArmoredEnemyModel(spec: EnemySpawnSpec): ArmoredEnemyEntit
   };
 }
 
-export function createEnemyJavelinModel(): THREE.Group {
+export function createEnemyJavelinModel(weaponTier: number = 1): THREE.Group {
+  const tierColors = [0xf97316, 0xfbbf24, 0xef4444, 0x38bdf8, 0xfacc15];
+  const glowHex = tierColors[Math.max(0, Math.min(4, weaponTier - 1))];
   const group = new THREE.Group();
   const shaft = new THREE.Mesh(
     new THREE.CylinderGeometry(0.016, 0.016, 1.15, 8).rotateX(Math.PI / 2),
-    new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.8 })
+    new THREE.MeshStandardMaterial({ color: weaponTier >= 4 ? 0x1e293b : 0x78350f, roughness: 0.75 })
   );
   const tip = new THREE.Mesh(
     new THREE.ConeGeometry(0.042, 0.18, 8).rotateX(-Math.PI / 2),
     new THREE.MeshStandardMaterial({
       color: 0xfef08a,
-      emissive: 0xf97316,
-      emissiveIntensity: 1.5,
+      emissive: glowHex,
+      emissiveIntensity: 1.4 + weaponTier * 0.2,
       metalness: 0.85,
       roughness: 0.2,
     })
   );
   tip.position.z = -0.62;
   group.add(shaft, tip);
+  return group;
+}
+
+export function createEnemyArrowModel(weaponTier: number = 1): THREE.Group {
+  const tierColors = [0xf59e0b, 0xfbbf24, 0xf97316, 0x22d3ee, 0xfde047];
+  const glowHex = tierColors[Math.max(0, Math.min(4, weaponTier - 1))];
+  const group = new THREE.Group();
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.01, 0.01, 0.78, 8).rotateX(Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: weaponTier >= 4 ? 0x0f172a : 0x5c3a21, roughness: 0.7 })
+  );
+  const head = new THREE.Mesh(
+    new THREE.ConeGeometry(0.032, 0.14, 8).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: glowHex,
+      emissiveIntensity: 1.6 + weaponTier * 0.25,
+      metalness: 0.85,
+      roughness: 0.15,
+    })
+  );
+  head.position.z = -0.44;
+  const fletch = new THREE.Mesh(
+    new THREE.BoxGeometry(0.07, 0.008, 0.14),
+    new THREE.MeshBasicMaterial({ color: glowHex })
+  );
+  fletch.position.z = 0.34;
+  group.add(shaft, head, fletch);
   return group;
 }

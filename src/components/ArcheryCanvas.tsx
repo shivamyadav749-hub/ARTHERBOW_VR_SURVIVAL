@@ -6,6 +6,8 @@ import {
   ARROW_TYPES,
   ArrowTypeId,
   CalibrationSettings,
+  EnemySpawnPhase,
+  EnemySpawnSpec,
   GameState,
   HITBOX_MULTIPLIERS,
   HitboxZone,
@@ -14,6 +16,8 @@ import {
   LiveBallisticsTelemetry,
   MobileControlBridge,
   MobileControlInput,
+  RadarBlip,
+  RadarWallMarker,
   ScorePopup,
   SeasonConfig,
 } from '../types/archery';
@@ -25,6 +29,7 @@ import {
   createAlpineEnvironment,
   createArmoredEnemyModel,
   createArrowModel,
+  createEnemyArrowModel,
   createEnemyJavelinModel,
   createVRBowModel,
   groundHeightAt,
@@ -91,6 +96,7 @@ interface IncomingJavelin {
   colliderMesh: THREE.Mesh;
   velocity: THREE.Vector3;
   damage: number;
+  sourceLabel: string;
   active: boolean;
 }
 
@@ -510,9 +516,48 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     const enemies: ArmoredEnemyEntity[] = [];
     const enemyHitboxMeshes: THREE.Mesh[] = [];
     const incomingJavelins: IncomingJavelin[] = [];
+    let pendingAmbushes: EnemySpawnSpec[] = [];
+    const triggeredAmbushPhases = new Set<EnemySpawnPhase>();
+    const ambushEnemyIds = new Set<number>();
+    const occludedEnemyIds = new Set<number>();
     let nextReinforcementId = 100;
     let totalSpawnedInLevel = 0;
     let reinforcementTimer = 3.2;
+
+    const getSafetyWallAmbushSpot = (
+      phase: EnemySpawnPhase,
+      slotIdx: number
+    ): { x: number; z: number } => {
+      const side = slotIdx % 2 === 0 ? -1 : 1;
+      if (phase === 'ambush_wall') {
+        // Behind side bastions / mid-road pillars flanking the first safety wall
+        return slotIdx % 2 === 0
+          ? { x: -5.35 + (Math.random() - 0.5) * 0.7, z: -11.6 - Math.random() * 1.4 }
+          : { x: 5.35 + (Math.random() - 0.5) * 0.7, z: -11.6 - Math.random() * 1.4 };
+      }
+      if (phase === 'ambush_mid') {
+        // Sudden ambush right behind forward road safety barricades & pillars
+        return slotIdx % 2 === 0
+          ? { x: -2.1 + (Math.random() - 0.5) * 1.1, z: -18.2 - Math.random() * 1.2 }
+          : { x: 3.9 + (Math.random() - 0.5) * 1.0, z: -20.4 - Math.random() * 1.2 };
+      }
+      // 'ambush_finish': Defenders bursting out around the finishing-line walls & gate
+      return {
+        x: THREE.MathUtils.clamp(side * (2.6 + Math.random() * 3.4), -7.0, 7.0),
+        z: finishLineZ + 1.4 - Math.random() * 2.8,
+      };
+    };
+
+    const spawnEnemyFromSpec = (spec: EnemySpawnSpec, attackDelayOverride?: number) => {
+      const entity = createArmoredEnemyModel(spec);
+      if (typeof attackDelayOverride === 'number') {
+        entity.attackTimer = attackDelayOverride;
+      }
+      enemies.push(entity);
+      enemiesContainer.add(entity.rootGroup);
+      entity.hitboxMeshes.forEach((m) => enemyHitboxMeshes.push(m));
+      return entity;
+    };
 
     const populateLevelEnemies = (lvl: LevelConfig) => {
       while (enemiesContainer.children.length > 0) {
@@ -520,16 +565,63 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       }
       enemies.length = 0;
       enemyHitboxMeshes.length = 0;
+      pendingAmbushes = [];
+      triggeredAmbushPhases.clear();
+      ambushEnemyIds.clear();
+      occludedEnemyIds.clear();
       nextReinforcementId = Math.max(100, lvl.enemies.length + 10);
-      totalSpawnedInLevel = lvl.enemies.length;
+      totalSpawnedInLevel = 0;
       reinforcementTimer = 3.2;
 
       lvl.enemies.forEach((spec) => {
-        const entity = createArmoredEnemyModel(spec);
-        enemies.push(entity);
-        enemiesContainer.add(entity.rootGroup);
-        entity.hitboxMeshes.forEach((m) => enemyHitboxMeshes.push(m));
+        if (!spec.spawnPhase || spec.spawnPhase === 'initial') {
+          spawnEnemyFromSpec(spec);
+          totalSpawnedInLevel++;
+        } else {
+          pendingAmbushes.push(spec);
+        }
       });
+
+      // Fallback safety: ensure at least 1 enemy is active at level start
+      if (enemies.length === 0 && pendingAmbushes.length > 0) {
+        const first = pendingAmbushes.shift()!;
+        spawnEnemyFromSpec(first);
+        totalSpawnedInLevel++;
+      }
+      stateRef.current.onEnemySpawned?.(enemies.length);
+    };
+
+    const triggerSafetyWallAmbush = (phase: EnemySpawnPhase) => {
+      if (triggeredAmbushPhases.has(phase)) return;
+      triggeredAmbushPhases.add(phase);
+
+      const toSpawn: EnemySpawnSpec[] = [];
+      pendingAmbushes = pendingAmbushes.filter((spec) => {
+        if (spec.spawnPhase === phase) {
+          toSpawn.push(spec);
+          return false;
+        }
+        return true;
+      });
+
+      if (toSpawn.length === 0) return;
+
+      toSpawn.forEach((spec, idx) => {
+        const spot = getSafetyWallAmbushSpot(phase, idx + spec.id);
+        const ambushSpec: EnemySpawnSpec = {
+          ...spec,
+          x: spot.x,
+          z: spot.z,
+        };
+        spawnEnemyFromSpec(ambushSpec, 0.35);
+        ambushEnemyIds.add(ambushSpec.id);
+        totalSpawnedInLevel++;
+        const gy = groundHeightAt(spot.x, spot.z);
+        spawnParticleBurst(new THREE.Vector3(spot.x, gy + 0.9, spot.z), '#F59E0B', 14, 0.9);
+      });
+
+      const aliveNow = enemies.filter((e) => e.aiState !== 'defeated').length;
+      stateRef.current.onEnemySpawned?.(aliveNow);
     };
 
     const spawnReinforcementEnemy = (lvl: LevelConfig, currentPlayerZ: number) => {
@@ -539,22 +631,43 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       const templates = lvl.enemies;
       if (!templates || templates.length === 0) return;
       const tpl = templates[nextReinforcementId % templates.length];
-      const spawnX = THREE.MathUtils.clamp((Math.random() - 0.5) * 12.4, -7.2, 7.2);
-      // Spawn beyond the Ending Line Gate marching toward the player up to the level enemy limit
-      const deepGateZ = Math.min(finishLineZ - 4.5, currentPlayerZ - 14.5) - Math.random() * 8.5;
-      const spawnZ = THREE.MathUtils.clamp(deepGateZ, -46, finishLineZ - 3.5);
+
+      // Alternate between ambushing from behind road safety walls ahead OR marching through the Finish Gate
+      let spawnX = THREE.MathUtils.clamp((Math.random() - 0.5) * 12.4, -7.2, 7.2);
+      let spawnZ = THREE.MathUtils.clamp(
+        Math.min(finishLineZ - 4.0, currentPlayerZ - 14.0) - Math.random() * 7.5,
+        -44,
+        finishLineZ - 3.2
+      );
+      let spawnedBehindWall = false;
+
+      if (currentPlayerZ > -16.5 && nextReinforcementId % 2 === 0) {
+        const wallPhase: EnemySpawnPhase =
+          currentPlayerZ > -8.0 ? 'ambush_wall' : 'ambush_mid';
+        const spot = getSafetyWallAmbushSpot(wallPhase, nextReinforcementId);
+        if (spot.z < currentPlayerZ - 3.2) {
+          spawnX = spot.x;
+          spawnZ = spot.z;
+          spawnedBehindWall = true;
+        }
+      }
 
       const newId = nextReinforcementId++;
       totalSpawnedInLevel++;
-      const entity = createArmoredEnemyModel({
-        ...tpl,
-        id: newId,
-        x: spawnX,
-        z: spawnZ,
-      });
-      enemies.push(entity);
-      enemiesContainer.add(entity.rootGroup);
-      entity.hitboxMeshes.forEach((m) => enemyHitboxMeshes.push(m));
+      spawnEnemyFromSpec(
+        {
+          ...tpl,
+          id: newId,
+          x: spawnX,
+          z: spawnZ,
+        },
+        0.45
+      );
+      if (spawnedBehindWall) {
+        ambushEnemyIds.add(newId);
+      }
+      const gy = groundHeightAt(spawnX, spawnZ);
+      spawnParticleBurst(new THREE.Vector3(spawnX, gy + 0.85, spawnZ), '#FBBF24', 10, 0.75);
 
       const aliveNow = enemies.filter((e) => e.aiState !== 'defeated').length;
       stateRef.current.onEnemySpawned?.(aliveNow);
@@ -1560,15 +1673,30 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         trajLine.visible = false;
       }
 
-      // C. Bounded Reinforcements (Strictly capped by concurrent + total level enemy limits)
+      // C. Staged Safety-Wall Ambushes + Bounded Reinforcements (Stop once Finish Line crossed)
       const activeSim = currentState.gameState === 'playing';
       const playerReachedFinish = playerPos.z <= finishLineZ + 0.5;
       if (activeSim && !playerReachedFinish) {
+        // Sudden road safety-wall ambushes as player moves toward the finishing line
+        if (playerPos.z <= -0.8) {
+          triggerSafetyWallAmbush('ambush_wall');
+        }
+        if (playerPos.z <= -7.5) {
+          triggerSafetyWallAmbush('ambush_mid');
+        }
+        if (playerPos.z <= -13.8) {
+          triggerSafetyWallAmbush('ambush_finish');
+        }
+
         const lvlCfg = currentState.levelConfig;
         const maxTotalEnemies = getLevelEnemyLimit(lvlCfg.level);
         const maxConcurrentAlive = getLevelConcurrentLimit(lvlCfg.level);
 
-        if (totalSpawnedInLevel < maxTotalEnemies && aliveCount < maxConcurrentAlive) {
+        if (
+          pendingAmbushes.length === 0 &&
+          totalSpawnedInLevel < maxTotalEnemies &&
+          aliveCount < maxConcurrentAlive
+        ) {
           reinforcementTimer -= simDt * (aliveCount === 0 ? 1.8 : 1.0);
           if (reinforcementTimer <= 0) {
             spawnReinforcementEnemy(lvlCfg, playerPos.z);
@@ -1640,6 +1768,9 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         }
         if (!occludedByCover) {
           visibleEnemiesCount++;
+          occludedEnemyIds.delete(enemy.id);
+        } else {
+          occludedEnemyIds.add(enemy.id);
         }
 
         const playerInsideSafetyWall = playerPos.z > -3.45 && Math.abs(playerPos.x) < 5.8;
@@ -1791,12 +1922,28 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
 
             if (enemy.aiState === 'windup_ranged') {
               enemy.windupTimer -= eDt;
-              enemy.rightArmPivot.rotation.x = THREE.MathUtils.damp(
-                enemy.rightArmPivot.rotation.x,
-                -1.35,
-                10,
-                dt
-              );
+              if (enemy.weaponType === 'bow') {
+                // Raise bow hand & pull string hand back
+                enemy.leftArmPivot.rotation.x = THREE.MathUtils.damp(
+                  enemy.leftArmPivot.rotation.x,
+                  -0.75,
+                  10,
+                  dt
+                );
+                enemy.rightArmPivot.rotation.x = THREE.MathUtils.damp(
+                  enemy.rightArmPivot.rotation.x,
+                  -0.55,
+                  10,
+                  dt
+                );
+              } else {
+                enemy.rightArmPivot.rotation.x = THREE.MathUtils.damp(
+                  enemy.rightArmPivot.rotation.x,
+                  -1.35,
+                  10,
+                  dt
+                );
+              }
               if (enemy.javelinTipGlowMat) {
                 enemy.javelinTipGlowMat.emissiveIntensity = 2.4;
               }
@@ -1805,46 +1952,59 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
                 enemy.aiState = 'advance';
                 enemy.attackTimer = enemy.attackCooldown;
                 enemy.rightArmPivot.rotation.x = 0.35;
+                enemy.leftArmPivot.rotation.x = 0;
                 if (enemy.javelinTipGlowMat) {
-                  enemy.javelinTipGlowMat.emissiveIntensity = 0.4;
+                  enemy.javelinTipGlowMat.emissiveIntensity = 0.4 + enemy.weaponTier * 0.15;
                 }
 
-                // Throw incoming Javelin toward player's current 3D position
-                const javMesh = createEnemyJavelinModel();
-                const startPos = new THREE.Vector3(pos.x + 0.3, pos.y + 1.55, pos.z + 0.4);
-                javMesh.position.copy(startPos);
+                // Launch upgraded Dhanus Arrow OR Bhala Javelin toward player's current 3D position
+                const isBowArcher = enemy.weaponType === 'bow';
+                const projMesh = isBowArcher
+                  ? createEnemyArrowModel(enemy.weaponTier)
+                  : createEnemyJavelinModel(enemy.weaponTier);
+                const startPos = new THREE.Vector3(
+                  pos.x + (isBowArcher ? -0.2 : 0.3),
+                  pos.y + 1.55,
+                  pos.z + 0.4
+                );
+                projMesh.position.copy(startPos);
 
                 const colMesh = new THREE.Mesh(
                   javelinColliderGeo,
                   new THREE.MeshBasicMaterial({ visible: false })
                 );
-                javMesh.add(colMesh);
-                scene.add(javMesh);
+                projMesh.add(colMesh);
+                scene.add(projMesh);
 
                 const targetPos = new THREE.Vector3(
                   playerPos.x + (Math.random() - 0.5) * 0.32,
                   _camWorldPos.y - 0.08,
                   playerPos.z + 0.1
                 );
-                const flightTimeApprox = Math.max(0.15, startPos.distanceTo(targetPos) / 24);
+                const projSpeed = isBowArcher
+                  ? 28 + enemy.weaponTier * 2.4
+                  : 23 + enemy.weaponTier * 1.6;
+                const flightTimeApprox = Math.max(0.14, startPos.distanceTo(targetPos) / projSpeed);
                 const javVel = targetPos.sub(startPos).divideScalar(flightTimeApprox);
-                javVel.y += 0.5 * 9.81 * 0.45 * flightTimeApprox;
+                javVel.y += 0.5 * 9.81 * (isBowArcher ? 0.35 : 0.45) * flightTimeApprox;
 
                 const dir = javVel.clone().normalize();
-                javMesh.quaternion.setFromUnitVectors(_forward, dir);
+                projMesh.quaternion.setFromUnitVectors(_forward, dir);
 
                 colMesh.userData.javelinIndex = incomingJavelins.length;
                 incomingJavelins.push({
-                  mesh: javMesh,
+                  mesh: projMesh,
                   colliderMesh: colMesh,
                   velocity: javVel,
                   damage: enemy.attackDamage,
+                  sourceLabel: isBowArcher ? 'Enemy Arrow Impact' : 'Bhala Javelin Impact',
                   active: true,
                 });
-                soundEngine.playArrowRelease(0.75, 'standard', startPos);
+                soundEngine.playArrowRelease(isBowArcher ? 0.92 : 0.75, 'standard', startPos);
               }
             } else {
               enemy.rightArmPivot.rotation.x = THREE.MathUtils.damp(enemy.rightArmPivot.rotation.x, 0, 8, dt);
+              enemy.leftArmPivot.rotation.x = THREE.MathUtils.damp(enemy.leftArmPivot.rotation.x, 0, 8, dt);
             }
           }
         } else {
@@ -1905,7 +2065,9 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
               }
               currentState.onPlayerDamaged(
                 enemy.attackDamage,
-                enemy.archetype === 'centurion' ? 'Centurion Strike' : 'Hoplite Slash'
+                enemy.archetype === 'centurion'
+                  ? `Centurion Halberd (T${enemy.weaponTier})`
+                  : `Bhala Spear Strike (T${enemy.weaponTier})`
               );
             } else {
               enemy.rightArmPivot.rotation.x = THREE.MathUtils.damp(enemy.rightArmPivot.rotation.x, 0, 8, dt);
@@ -2021,7 +2183,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
           if (vrFrame.presenting) {
             vrRig.pulseHaptic('both', 0.85, 160);
           }
-          currentState.onPlayerDamaged(jav.damage, 'Javelin Impact');
+          currentState.onPlayerDamaged(jav.damage, jav.sourceLabel);
         } else if (
           jav.mesh.position.y < groundHeightAt(jav.mesh.position.x, jav.mesh.position.z) ||
           jav.mesh.position.z > 8
@@ -2424,10 +2586,62 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       );
       const crossedFinishLine = playerPos.z <= finishLineZ + 0.5;
 
-      // G. Telemetry ~15Hz
+      // G. Telemetry ~15Hz (including Tactical Safety-Wall & Ambush Radar blips)
       if (elapsed - lastTelemetryPush > 0.065) {
         lastTelemetryPush = elapsed;
         const launchSpeed = activeCfg.muzzleVelocity * (0.24 + 0.76 * drawRatio);
+
+        const horizLen = Math.hypot(_camFwd.x, _camFwd.z) || 1;
+        const fwdX = _camFwd.x / horizLen;
+        const fwdZ = _camFwd.z / horizLen;
+        const rightX = -fwdZ;
+        const rightZ = fwdX;
+
+        const radarBlips: RadarBlip[] = [];
+        let behindWallAlertCount = 0;
+
+        for (let idx = 0; idx < enemies.length; idx++) {
+          const e = enemies[idx];
+          if (e.aiState === 'defeated') continue;
+          const ePos = e.rootGroup.position;
+          const dx = ePos.x - playerPos.x;
+          const dz = ePos.z - playerPos.z;
+          const relX = Number((dx * rightX + dz * rightZ).toFixed(2));
+          const relZ = Number((dx * fwdX + dz * fwdZ).toFixed(2));
+          const distM = Number(Math.hypot(dx, dz).toFixed(1));
+          const isAmbush = ambushEnemyIds.has(e.id);
+          const behindSafetyWall =
+            relZ < 0.6 ||
+            ePos.z > playerPos.z - 0.5 ||
+            occludedEnemyIds.has(e.id) ||
+            isAmbush;
+          if (behindSafetyWall) {
+            behindWallAlertCount++;
+          }
+          radarBlips.push({
+            id: e.id,
+            relX,
+            relZ,
+            distanceMeters: distM,
+            archetype: e.archetype,
+            weaponType: e.weaponType,
+            behindSafetyWall,
+            isAmbush,
+          });
+        }
+
+        const radarWalls: RadarWallMarker[] = [];
+        for (let wIdx = 0; wIdx < coverObstacles.length; wIdx++) {
+          const obs = coverObstacles[wIdx];
+          const dx = obs.x - playerPos.x;
+          const dz = obs.z - playerPos.z;
+          radarWalls.push({
+            id: obs.id,
+            relX: Number((dx * rightX + dz * rightZ).toFixed(2)),
+            relZ: Number((dx * fwdX + dz * fwdZ).toFixed(2)),
+          });
+        }
+
         currentState.onUpdateTelemetry({
           drawPercent: Math.round(drawRatio * 100),
           drawLengthMeters: Number(drawDistance.toFixed(2)),
@@ -2439,6 +2653,9 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
           distanceToFinishMeters,
           routeProgressPct,
           crossedFinishLine,
+          radarBlips,
+          radarWalls,
+          behindWallAlertCount,
         });
       }
 
