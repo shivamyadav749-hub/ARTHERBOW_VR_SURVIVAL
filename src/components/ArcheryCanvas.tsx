@@ -12,6 +12,8 @@ import {
   ImpactMaterial,
   LevelConfig,
   LiveBallisticsTelemetry,
+  MobileControlBridge,
+  MobileControlInput,
   ScorePopup,
   SeasonConfig,
 } from '../types/archery';
@@ -46,6 +48,10 @@ interface ArcheryCanvasProps {
   earnedStars?: number;
   coins?: number;
   clearArrowsSignal: number;
+  isMobileTouchActive?: boolean;
+  mobileInputRef?: React.MutableRefObject<MobileControlInput>;
+  mobileBridgeRef?: React.MutableRefObject<MobileControlBridge | null>;
+  onCrouchStateChange?: (crouched: boolean) => void;
   vrToggleRef?: React.MutableRefObject<(() => Promise<void>) | null>;
   onVrStateChange?: (isInVr: boolean) => void;
   onSelectArrowFromVr?: (arrowType: ArrowTypeId) => void;
@@ -247,6 +253,10 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
   earnedStars = 0,
   coins = 0,
   clearArrowsSignal,
+  isMobileTouchActive = false,
+  mobileInputRef,
+  mobileBridgeRef,
+  onCrouchStateChange,
   vrToggleRef,
   onVrStateChange,
   onSelectArrowFromVr,
@@ -283,6 +293,8 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     equippedArmorTrimHex,
     earnedStars,
     coins,
+    isMobileTouchActive,
+    onCrouchStateChange,
     onVrStateChange,
     onSelectArrowFromVr,
     onVrOutcomeAction,
@@ -309,6 +321,8 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       equippedArmorTrimHex,
       earnedStars,
       coins,
+      isMobileTouchActive,
+      onCrouchStateChange,
       onVrStateChange,
       onSelectArrowFromVr,
       onVrOutcomeAction,
@@ -333,6 +347,8 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     equippedArmorTrimHex,
     earnedStars,
     coins,
+    isMobileTouchActive,
+    onCrouchStateChange,
     onVrStateChange,
     onSelectArrowFromVr,
     onVrOutcomeAction,
@@ -716,6 +732,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       playerVelX = 0;
       playerVelZ = 0;
       isCrouched = false;
+      stateRef.current.onCrouchStateChange?.(false);
       currentEyeHeight = 1.68;
       walkBobPhase = 0;
       keysDown.clear();
@@ -742,9 +759,30 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       renderer.compile(scene, camera);
     }
 
-    // Input Handlers (Wide Look Yaw for Flanking + Bow Draw + WASD / Shift / Crouch)
+    // Input Handlers (Desktop Mouse + Multi-Touch Swipe-to-Aim + Mobile Bridge + Keyboard)
+    let touchLookPointerId: number | null = null;
+    let lastTouchLookX = 0;
+    let lastTouchLookY = 0;
+
+    const applyTouchLookDelta = (deltaX: number, deltaY: number) => {
+      const sens = 0.0046 * (stateRef.current.calibration.touchSensitivity ?? 1.0);
+      targetYaw = THREE.MathUtils.clamp(targetYaw - deltaX * sens, -2.95, 2.95);
+      targetPitch = THREE.MathUtils.clamp(targetPitch - deltaY * sens * 0.78, -0.36, 0.44);
+    };
+
     const onPointerMove = (e: PointerEvent) => {
       if (stateRef.current.gameState !== 'playing') return;
+      if (e.pointerType === 'touch') {
+        if (touchLookPointerId === e.pointerId) {
+          const dx = e.clientX - lastTouchLookX;
+          const dy = e.clientY - lastTouchLookY;
+          lastTouchLookX = e.clientX;
+          lastTouchLookY = e.clientY;
+          applyTouchLookDelta(dx, dy);
+        }
+        return;
+      }
+
       const rect = renderer.domElement.getBoundingClientRect();
       const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       const ny = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -769,12 +807,12 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       if (nockedArrowMesh) nockedArrowMesh.visible = true;
     };
 
-    const releaseBowString = () => {
+    const releaseBowString = (cancelShot: boolean = false) => {
       if (!isDrawing) return;
       isDrawing = false;
 
       const ratio = THREE.MathUtils.clamp(drawDistance / MAX_DRAW_DISTANCE, 0, 1);
-      if (ratio >= 0.14 && stateRef.current.gameState === 'playing') {
+      if (!cancelShot && ratio >= 0.14 && stateRef.current.gameState === 'playing') {
         const activeType = stateRef.current.selectedArrowType;
         const cfg = ARROW_TYPES[activeType];
 
@@ -822,14 +860,51 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       trajLine.visible = false;
     };
 
+    if (mobileBridgeRef) {
+      mobileBridgeRef.current = {
+        startDraw: () => startBowDraw(),
+        releaseDraw: (cancel?: boolean) => releaseBowString(Boolean(cancel)),
+        addLookDelta: (dx: number, dy: number) => applyTouchLookDelta(dx, dy),
+        toggleCrouch: () => {
+          isCrouched = !isCrouched;
+          stateRef.current.onCrouchStateChange?.(isCrouched);
+        },
+        recenterAim: () => {
+          targetYaw = 0;
+          targetPitch = 0.03;
+        },
+      };
+    }
+
     const onPointerDown = (e: PointerEvent) => {
+      if (stateRef.current.gameState !== 'playing') return;
+      if (e.pointerType === 'touch') {
+        if (touchLookPointerId === null) {
+          touchLookPointerId = e.pointerId;
+          lastTouchLookX = e.clientX;
+          lastTouchLookY = e.clientY;
+        }
+        return;
+      }
       if (e.button !== 0) return;
       startBowDraw();
     };
 
     const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        if (touchLookPointerId === e.pointerId) {
+          touchLookPointerId = null;
+        }
+        return;
+      }
       if (e.button !== 0) return;
-      releaseBowString();
+      releaseBowString(false);
+    };
+
+    const onPointerCancel = (e: PointerEvent) => {
+      if (touchLookPointerId === e.pointerId) {
+        touchLookPointerId = null;
+      }
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -849,6 +924,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
           startBowDraw();
         } else if ((e.code === 'KeyX' || e.code === 'KeyQ') && !e.repeat) {
           isCrouched = !isCrouched;
+          stateRef.current.onCrouchStateChange?.(isCrouched);
         }
       }
     };
@@ -856,12 +932,13 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     const onKeyUp = (e: KeyboardEvent) => {
       keysDown.delete(e.code);
       if (e.code === 'Space') {
-        releaseBowString();
+        releaseBowString(false);
       }
     };
 
     const onWindowBlur = () => {
       keysDown.clear();
+      touchLookPointerId = null;
       isDrawing = false;
       drawDistance = 0;
       trajLine.visible = false;
@@ -871,6 +948,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
     domElem.addEventListener('pointermove', onPointerMove);
     domElem.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onWindowBlur);
@@ -1111,6 +1189,7 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         if (currentState.gameState === 'playing') {
           if (vrFrame.crouchToggleJustPressed) {
             isCrouched = !isCrouched;
+            stateRef.current.onCrouchStateChange?.(isCrouched);
           }
           const physicalDuck = camera.position.y > 0.2 && camera.position.y < 1.24;
           const vrCrouched = isCrouched || physicalDuck;
@@ -1210,18 +1289,26 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
         currentPitch = THREE.MathUtils.damp(currentPitch, targetPitch, 14, dt);
 
         if (currentState.gameState === 'playing') {
-          const moveRightInput =
+          const kbRight =
             (keysDown.has('KeyD') || keysDown.has('ArrowRight') ? 1 : 0) -
             (keysDown.has('KeyA') || keysDown.has('ArrowLeft') ? 1 : 0);
-          const moveFwdInput =
+          const kbFwd =
             (keysDown.has('KeyW') || keysDown.has('ArrowUp') ? 1 : 0) -
             (keysDown.has('KeyS') || keysDown.has('ArrowDown') ? 1 : 0);
 
-          const hasMoveInput = moveRightInput !== 0 || moveFwdInput !== 0;
+          const mob = mobileInputRef?.current;
+          const moveRightInput = kbRight !== 0 ? kbRight : mob ? mob.moveX : 0;
+          const moveFwdInput = kbFwd !== 0 ? kbFwd : mob ? mob.moveY : 0;
+          const stickMag = Math.hypot(moveRightInput, moveFwdInput);
+
+          const hasMoveInput = stickMag > 0.05;
           isSprinting =
             hasMoveInput &&
             !isCrouched &&
-            (keysDown.has('ShiftLeft') || keysDown.has('ShiftRight'));
+            (keysDown.has('ShiftLeft') ||
+              keysDown.has('ShiftRight') ||
+              Boolean(mob?.sprintLocked) ||
+              (kbRight === 0 && kbFwd === 0 && stickMag >= 0.82));
 
           // Walk 4.3 m/s, Run/Sprint 7.9 m/s, Crouched 2.55 m/s
           let targetSpeed = isCrouched ? 2.55 : isSprinting ? 7.9 : 4.3;
@@ -1230,9 +1317,9 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
           let desiredVx = 0;
           let desiredVz = 0;
           if (hasMoveInput) {
-            const len = Math.hypot(moveRightInput, moveFwdInput);
-            const normR = moveRightInput / len;
-            const normF = moveFwdInput / len;
+            const scale = stickMag > 1 ? 1 / stickMag : 1;
+            const normR = moveRightInput * scale;
+            const normF = moveFwdInput * scale;
 
             const fwdX = -Math.sin(currentYaw);
             const fwdZ = -Math.cos(currentYaw);
@@ -2380,10 +2467,14 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       domElem.removeEventListener('pointermove', onPointerMove);
       domElem.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener('resize', onResize);
+      if (mobileBridgeRef) {
+        mobileBridgeRef.current = null;
+      }
       vrRig.dispose();
       renderer.dispose();
     };
@@ -2394,14 +2485,14 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       {/* Isolated WebGL Mount Container */}
       <div
         ref={mountRef}
-        className="w-full h-full cursor-crosshair"
+        className="w-full h-full cursor-crosshair touch-none"
         aria-label="3D VR Archery Survival Viewport"
       />
 
       {/* Peripheral Red Damage Vignette Overlay */}
       <div
         ref={damageFlashRef}
-        className="fixed inset-0 pointer-events-none z-10 border-[18px] border-rose-600/80 shadow-[inset_0_0_90px_rgba(225,29,72,0.75)]"
+        className="fixed inset-0 pointer-events-none z-10 border-[12px] sm:border-[18px] border-rose-600/80 shadow-[inset_0_0_90px_rgba(225,29,72,0.75)]"
         style={{ opacity: 0 }}
       />
 
@@ -2409,24 +2500,26 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       {gameState === 'playing' && (
         <div
           ref={stanceBadgeRef}
-          className="fixed right-5 top-1/2 -translate-y-1/2 z-10 pointer-events-none bg-[#0B101B]/90 border border-white/15 rounded-xl px-3.5 py-2.5 shadow-lg max-w-[230px]"
+          className={`fixed right-2.5 sm:right-5 z-10 pointer-events-none bg-[#0B101B]/90 border border-white/15 rounded-xl px-2.5 py-1.5 sm:px-3.5 sm:py-2.5 shadow-lg max-w-[160px] sm:max-w-[230px] ${
+            isMobileTouchActive ? 'top-[36%] sm:top-[42%]' : 'top-1/2 -translate-y-1/2'
+          }`}
           aria-label="Player Movement and Stealth Stance"
         >
-          <div className="flex items-center gap-2 mb-0.5">
+          <div className="flex items-center gap-1.5 sm:gap-2 mb-0.5">
             <span
               ref={stanceDotRef}
-              className="w-2.5 h-2.5 rounded-full shrink-0 bg-slate-400"
+              className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full shrink-0 bg-slate-400"
             />
             <span
               ref={stanceLabelRef}
-              className="text-xs font-mono font-bold tracking-wide text-slate-200"
+              className="text-[10px] sm:text-xs font-mono font-bold tracking-wide text-slate-200 truncate"
             >
               STANDING READY
             </span>
           </div>
           <span
             ref={stanceSubRef}
-            className="block text-[10px] font-mono text-slate-400 leading-snug"
+            className="hidden sm:block text-[10px] font-mono text-slate-400 leading-snug"
           >
             WASD Move · Shift Run · X/Q Crouch & Hide
           </span>
@@ -2436,21 +2529,23 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
       {/* In-Canvas Visual Draw Strength Gauge (Green -> Red Tension Gradient) */}
       {gameState === 'playing' && (
         <div
-          className="fixed left-5 top-1/2 -translate-y-1/2 z-10 pointer-events-none flex flex-col items-center gap-2 bg-[#0B101B]/90 border border-white/15 rounded-xl px-3 py-3.5 shadow-lg"
+          className={`fixed left-2.5 sm:left-5 z-10 pointer-events-none flex flex-col items-center gap-1 sm:gap-2 bg-[#0B101B]/90 border border-white/15 rounded-xl px-2 py-2 sm:px-3 sm:py-3.5 shadow-lg ${
+            isMobileTouchActive ? 'top-[40%] -translate-y-1/2' : 'top-1/2 -translate-y-1/2'
+          }`}
           aria-label="Draw Strength Gauge"
         >
-          <span className="text-[10px] font-mono font-semibold text-slate-300 tracking-wide text-center">
+          <span className="hidden sm:inline text-[10px] font-mono font-semibold text-slate-300 tracking-wide text-center">
             Draw Strength
           </span>
 
           <span
             ref={gaugePercentRef}
-            className="text-sm font-mono font-bold text-slate-400 tabular-nums"
+            className="text-xs sm:text-sm font-mono font-bold text-slate-400 tabular-nums"
           >
             0%
           </span>
 
-          <div className="relative w-4 h-44 rounded-full bg-[#070B12] border border-white/15 overflow-hidden flex flex-col justify-end">
+          <div className="relative w-2.5 h-24 sm:w-4 sm:h-44 rounded-full bg-[#070B12] border border-white/15 overflow-hidden flex flex-col justify-end">
             <div className="absolute inset-x-0 bottom-1/4 h-px bg-white/15 z-10" />
             <div className="absolute inset-x-0 bottom-1/2 h-px bg-white/25 z-10" />
             <div className="absolute inset-x-0 bottom-3/4 h-px bg-white/15 z-10" />
@@ -2463,10 +2558,10 @@ export const ArcheryCanvas: React.FC<ArcheryCanvasProps> = ({
           </div>
 
           <div className="flex flex-col items-center gap-0.5 font-mono tabular-nums text-center">
-            <span ref={gaugeVelocityRef} className="text-xs font-bold text-white">
+            <span ref={gaugeVelocityRef} className="text-[10px] sm:text-xs font-bold text-white">
               0 m/s
             </span>
-            <span ref={gaugeTierRef} className="text-[10px] font-semibold text-slate-500">
+            <span ref={gaugeTierRef} className="hidden sm:inline text-[10px] font-semibold text-slate-500">
               Ready
             </span>
           </div>

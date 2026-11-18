@@ -4,6 +4,7 @@ import {
   Code2,
   Copy,
   Eye,
+  Gamepad2,
   Hand,
   RotateCcw,
   Sliders,
@@ -15,6 +16,7 @@ import {
 import {
   CalibrationSettings as CalibrationSettingsType,
   DEFAULT_CALIBRATION_SETTINGS,
+  MobileControlMode,
 } from '../types/archery';
 import { generateCalibrationCSharpSnippet } from '../data/unityScripts';
 
@@ -369,25 +371,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-black/80 pointer-events-auto">
-      <div className="w-full max-w-6xl max-h-[88vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 md:p-8 bg-black/80 pointer-events-auto">
+      <div className="w-full max-w-6xl max-h-[92dvh] sm:max-h-[88vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-[#070B12]">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-3.5 sm:py-4 border-b border-white/10 bg-[#070B12]">
+          <div className="flex items-center gap-2.5 min-w-0">
             <Sliders className="w-5 h-5 text-sky-400 shrink-0" />
-            <div>
-              <h2 className="text-lg font-bold tracking-tight text-white font-display">
+            <div className="min-w-0">
+              <h2 className="text-base sm:text-lg font-bold tracking-tight text-white font-display truncate">
                 VR Rig Calibration & Simulation Settings
               </h2>
-              <p className="text-xs text-slate-400">
-                Adjust virtual IPD, controller-to-string hand offsets, and range telemetry options
+              <p className="text-xs text-slate-400 truncate">
+                Adjust virtual IPD, string offsets, and mobile touch controls
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer"
+            className="p-2 text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer shrink-0"
             aria-label="Close Settings Modal"
           >
             <X className="w-4 h-4" />
@@ -395,11 +397,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex items-center justify-between px-6 py-2.5 bg-[#0E1525] border-b border-white/10">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-2.5 bg-[#0E1525] border-b border-white/10 overflow-x-auto shrink-0">
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setActiveTab('calibration')}
-              className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`px-3 sm:px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'calibration'
                   ? 'bg-sky-400 text-slate-950'
                   : 'text-slate-300 hover:text-white hover:bg-white/5'
@@ -409,13 +411,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
             <button
               onClick={() => setActiveTab('range')}
-              className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`px-3 sm:px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === 'range'
                   ? 'bg-sky-400 text-slate-950'
                   : 'text-slate-300 hover:text-white hover:bg-white/5'
               }`}
             >
-              Range & Audio Preferences
+              Controls, Range & Audio
             </button>
           </div>
 
@@ -431,7 +433,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Body Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
           {activeTab === 'calibration' ? (
             <CalibrationSettings
               calibration={calibration}
@@ -439,6 +441,64 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
           ) : (
             <div className="max-w-2xl space-y-4">
+              {/* Mobile Touch Controls Mode & Sensitivity */}
+              <div className="bg-[#070B12] border border-white/10 rounded-lg p-4 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <Gamepad2 className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="text-sm font-bold text-white">On-Screen Mobile Touch Controls</div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        Virtual movement joystick, crouch/sprint toggles, and hold-to-draw bow trigger
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {(['auto', 'on', 'off'] as MobileControlMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() =>
+                          onChangeCalibration({
+                            ...calibration,
+                            mobileControlsMode: mode,
+                          })
+                        }
+                        className={`px-3 py-1.5 text-xs font-mono font-semibold rounded-lg border transition-colors cursor-pointer uppercase ${
+                          calibration.mobileControlsMode === mode
+                            ? 'bg-sky-400 text-slate-950 border-sky-400'
+                            : 'bg-[#0B101B] text-slate-300 border-white/15 hover:text-white'
+                        }`}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-white/10">
+                  <div className="flex items-center justify-between text-xs mb-1.5">
+                    <span className="text-slate-300 font-semibold">Touch Swipe Aim Sensitivity</span>
+                    <span className="font-mono font-bold text-sky-400 tabular-nums">
+                      {calibration.touchSensitivity.toFixed(2)}x
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.4}
+                    max={2.2}
+                    step={0.05}
+                    value={calibration.touchSensitivity}
+                    onChange={(e) =>
+                      onChangeCalibration({
+                        ...calibration,
+                        touchSensitivity: parseFloat(e.target.value),
+                      })
+                    }
+                    className="w-full accent-sky-400 cursor-pointer"
+                  />
+                </div>
+              </div>
+
               <div className="bg-[#070B12] border border-white/10 rounded-lg p-4 flex items-center justify-between gap-4">
                 <div>
                   <div className="text-sm font-bold text-white">Ballistic Trajectory Preview Arc</div>
@@ -507,9 +567,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Footer Action */}
-        <div className="px-6 py-3.5 border-t border-white/10 bg-[#070B12] flex items-center justify-between">
+        <div className="px-4 sm:px-6 py-3 sm:py-3.5 border-t border-white/10 bg-[#070B12] flex flex-wrap items-center justify-between gap-2">
           <span className="text-xs text-slate-400 font-mono">
-            Changes apply immediately to the 3D bow sight and Unity C# snippet
+            Changes apply immediately to gameplay & Unity C# snippet
           </span>
           <button
             onClick={onClose}

@@ -273,6 +273,22 @@ export interface LiveBallisticsTelemetry {
   crossedFinishLine: boolean;
 }
 
+export type MobileControlMode = 'auto' | 'on' | 'off';
+
+export interface MobileControlInput {
+  moveX: number; // -1 (left) to +1 (right)
+  moveY: number; // -1 (back) to +1 (forward)
+  sprintLocked: boolean;
+}
+
+export interface MobileControlBridge {
+  startDraw: () => void;
+  releaseDraw: (cancel?: boolean) => void;
+  addLookDelta: (deltaX: number, deltaY: number) => void;
+  toggleCrouch: () => void;
+  recenterAim: () => void;
+}
+
 export interface CalibrationSettings {
   virtualIpdMm: number;
   dominantEye: 'right' | 'left';
@@ -281,6 +297,8 @@ export interface CalibrationSettings {
     y: number;
     z: number;
   };
+  touchSensitivity: number;
+  mobileControlsMode: MobileControlMode;
 }
 
 export const DEFAULT_CALIBRATION_SETTINGS: CalibrationSettings = {
@@ -291,6 +309,8 @@ export const DEFAULT_CALIBRATION_SETTINGS: CalibrationSettings = {
     y: 1.5,
     z: -2.0,
   },
+  touchSensitivity: 1.0,
+  mobileControlsMode: 'auto',
 };
 
 export type ImpactMaterial = 'wood' | 'stone' | 'metal';

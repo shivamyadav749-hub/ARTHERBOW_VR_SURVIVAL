@@ -5166,4 +5166,1031 @@ namespace MetaQuestArchery
     }
 }`,
   },
+  {
+    id: 'vr-haptic-controller',
+    fileName: 'VrHapticController.cs',
+    className: 'VrHapticController : MonoBehaviour',
+    roleSummary:
+      'Triggers XR Interaction Toolkit controller vibration impulses when the bow reaches full draw tension or when an arrow strikes an enemy.',
+    keyHighlights: [
+      'Uses UnityEngine.XR.Interaction.Toolkit XRBaseController.SendHapticImpulse (plus optional XRI 3.x HapticImpulsePlayer fallback) for left/right controllers',
+      'Edge-triggered full-draw lock-in vibration with hysteresis re-arming (0.98f lock / 0.85f re-arm) synced to VRBowController.NormalizedTension',
+      'Distinct enemy-hit haptic patterns: punchy body hit, metallic shield deflection, and double-tap confirmation coroutine for critical headshots/kills',
+    ],
+    code: `using System.Collections;
+using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit;
+#if XRI_3_0_OR_NEWER
+using UnityEngine.XR.Interaction.Toolkit.Inputs.Haptics;
+#endif
+
+namespace MetaQuestArchery
+{
+    public enum HapticHandTarget
+    {
+        BowHand = 0,
+        StringHand = 1,
+        BothHands = 2
+    }
+
+    /// <summary>
+    /// Central XR Interaction Toolkit haptic feedback controller.
+    /// Triggers tactile impulses when the bow hits full draw tension and when arrows hit enemies.
+    /// </summary>
+    public class VrHapticController : MonoBehaviour
+    {
+        public static VrHapticController Instance { get; private set; }
+
+        [Header("XR Interaction Toolkit Controllers")]
+        [Tooltip("XRBaseController on the left/bow hand (ActionBasedController or XRController).")]
+        [SerializeField] private XRBaseController bowHandController;
+        [Tooltip("XRBaseController on the right/string hand.")]
+        [SerializeField] private XRBaseController stringHandController;
+
+#if XRI_3_0_OR_NEWER
+        [Header("XRI 3.x HapticImpulsePlayer (Optional)")]
+        [SerializeField] private HapticImpulsePlayer bowHandHapticPlayer;
+        [SerializeField] private HapticImpulsePlayer stringHandHapticPlayer;
+#endif
+
+        [Header("Bow Draw Integration")]
+        [Tooltip("Optional reference to poll bow draw tension automatically each frame.")]
+        [SerializeField] private VRBowController bowController;
+        [Range(0.85f, 1.0f)]
+        [SerializeField] private float fullDrawThreshold = 0.98f;
+        [Range(0.50f, 0.94f)]
+        [SerializeField] private float drawRearmThreshold = 0.85f;
+        [SerializeField] private float fullDrawAmplitude = 0.72f;
+        [SerializeField] private float fullDrawDuration = 0.09f;
+        [SerializeField] private float bowHandDrawScale = 0.65f;
+
+        [Header("Optional Hold Overdraw Feedback")]
+        [SerializeField] private bool enableHoldHeartbeat = true;
+        [SerializeField] private float holdHeartbeatDelay = 1.15f;
+        [SerializeField] private float holdHeartbeatInterval = 0.55f;
+        [SerializeField] private float holdHeartbeatAmplitude = 0.22f;
+        [SerializeField] private float holdHeartbeatDuration = 0.045f;
+
+        [Header("Enemy Hit Haptic Profiles")]
+        [SerializeField] private float bodyHitAmplitude = 0.62f;
+        [SerializeField] private float bodyHitDuration = 0.085f;
+        [SerializeField] private float criticalHitAmplitude = 0.95f;
+        [SerializeField] private float criticalHitDuration = 0.12f;
+        [SerializeField] private float criticalFollowupDelay = 0.07f;
+        [SerializeField] private float shieldDeflectAmplitude = 0.45f;
+        [SerializeField] private float shieldDeflectDuration = 0.055f;
+        [SerializeField] private float minHitPulseCooldown = 0.05f;
+
+        private bool _hasTriggeredFullDraw;
+        private float _fullDrawHoldTimer;
+        private float _nextHeartbeatTime;
+        private float _lastEnemyHitTime = -99f;
+        private Coroutine _hitPatternCoroutine;
+
+        private void Awake()
+        {
+            if (Instance != null && Instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+            Instance = this;
+        }
+
+        private void OnDestroy()
+        {
+            if (Instance == this)
+            {
+                Instance = null;
+            }
+        }
+
+        private void Update()
+        {
+            if (bowController != null)
+            {
+                EvaluateDrawTension(bowController.NormalizedTension);
+            }
+        }
+
+        /// <summary>
+        /// Evaluates current bow draw ratio (0..1) and fires a crisp lock-in impulse at full draw.
+        /// Call directly from custom bow scripts if bowController reference is not assigned.
+        /// </summary>
+        public void EvaluateDrawTension(float normalizedDraw)
+        {
+            float clampedDraw = Mathf.Clamp01(normalizedDraw);
+
+            // Edge-triggered full-draw vibration with hysteresis re-arming
+            if (!_hasTriggeredFullDraw && clampedDraw >= fullDrawThreshold)
+            {
+                _hasTriggeredFullDraw = true;
+                _fullDrawHoldTimer = 0f;
+                _nextHeartbeatTime = holdHeartbeatDelay;
+                TriggerFullDrawHaptic();
+            }
+            else if (_hasTriggeredFullDraw && clampedDraw < drawRearmThreshold)
+            {
+                ResetDrawState();
+            }
+
+            // Optional subtle heartbeat while holding bow at peak tension
+            if (enableHoldHeartbeat && _hasTriggeredFullDraw && clampedDraw >= fullDrawThreshold)
+            {
+                _fullDrawHoldTimer += Time.deltaTime;
+                if (_fullDrawHoldTimer >= _nextHeartbeatTime)
+                {
+                    _nextHeartbeatTime = _fullDrawHoldTimer + holdHeartbeatInterval;
+                    SendImpulse(HapticHandTarget.BowHand, holdHeartbeatAmplitude, holdHeartbeatDuration);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Explicitly fires the full-draw tactile lock-in vibration on both hands.
+        /// </summary>
+        public void TriggerFullDrawHaptic()
+        {
+            SendImpulse(HapticHandTarget.StringHand, fullDrawAmplitude, fullDrawDuration);
+            SendImpulse(HapticHandTarget.BowHand, fullDrawAmplitude * bowHandDrawScale, fullDrawDuration * 0.85f);
+        }
+
+        /// <summary>
+        /// Resets the full-draw latch immediately (for example, right after releasing an arrow).
+        /// </summary>
+        public void ResetDrawState()
+        {
+            _hasTriggeredFullDraw = false;
+            _fullDrawHoldTimer = 0f;
+        }
+
+        /// <summary>
+        /// Triggers controller vibration when an arrow strikes an enemy hitbox zone.
+        /// </summary>
+        public void TriggerEnemyHitHaptic(HitboxZoneType zone = HitboxZoneType.Torso, bool isKill = false)
+        {
+            if (Time.unscaledTime - _lastEnemyHitTime < minHitPulseCooldown)
+            {
+                return;
+            }
+            _lastEnemyHitTime = Time.unscaledTime;
+
+            if (zone == HitboxZoneType.Shield)
+            {
+                // Crisp metallic deflection thud primarily in the bow hand
+                SendImpulse(HapticHandTarget.BowHand, shieldDeflectAmplitude, shieldDeflectDuration);
+                return;
+            }
+
+            bool isCritical = zone == HitboxZoneType.Head || isKill;
+            if (isCritical)
+            {
+                if (_hitPatternCoroutine != null)
+                {
+                    StopCoroutine(_hitPatternCoroutine);
+                }
+                _hitPatternCoroutine = StartCoroutine(PlayCriticalHitPatternRoutine(isKill));
+            }
+            else
+            {
+                float zoneScale = zone == HitboxZoneType.Limb ? 0.78f : 1.0f;
+                SendImpulse(HapticHandTarget.BothHands, bodyHitAmplitude * zoneScale, bodyHitDuration);
+            }
+        }
+
+        /// <summary>
+        /// Simplified overload for projectile or damage events without a HitboxZoneType reference.
+        /// </summary>
+        public void TriggerEnemyHitHaptic(bool isCriticalHit, bool isKill = false)
+        {
+            HitboxZoneType mappedZone = isCriticalHit ? HitboxZoneType.Head : HitboxZoneType.Torso;
+            TriggerEnemyHitHaptic(mappedZone, isKill);
+        }
+
+        private IEnumerator PlayCriticalHitPatternRoutine(bool isKill)
+        {
+            // First heavy impact pulse
+            SendImpulse(HapticHandTarget.BothHands, criticalHitAmplitude, criticalHitDuration);
+
+            yield return new WaitForSecondsRealtime(criticalFollowupDelay);
+
+            // Second confirmation tap (stronger on lethal elimination)
+            float followupAmp = isKill ? Mathf.Clamp01(criticalHitAmplitude * 0.88f) : 0.55f;
+            float followupDur = isKill ? 0.085f : 0.055f;
+            SendImpulse(HapticHandTarget.BowHand, followupAmp, followupDur);
+            _hitPatternCoroutine = null;
+        }
+
+        /// <summary>
+        /// Dispatches haptic impulses through Unity XR Interaction Toolkit controllers.
+        /// </summary>
+        public void SendImpulse(HapticHandTarget target, float amplitude, float duration, float frequency = 0f)
+        {
+            float safeAmp = Mathf.Clamp01(amplitude);
+            float safeDur = Mathf.Max(0.01f, duration);
+
+            if (target == HapticHandTarget.BowHand || target == HapticHandTarget.BothHands)
+            {
+                SendToSingleController(bowHandController, safeAmp, safeDur, frequency
+#if XRI_3_0_OR_NEWER
+                    , bowHandHapticPlayer
+#endif
+                );
+            }
+
+            if (target == HapticHandTarget.StringHand || target == HapticHandTarget.BothHands)
+            {
+                SendToSingleController(stringHandController, safeAmp, safeDur, frequency
+#if XRI_3_0_OR_NEWER
+                    , stringHandHapticPlayer
+#endif
+                );
+            }
+        }
+
+        private static void SendToSingleController(
+            XRBaseController controller,
+            float amplitude,
+            float duration,
+            float frequency
+#if XRI_3_0_OR_NEWER
+            , HapticImpulsePlayer hapticPlayer
+#endif
+        )
+        {
+#if XRI_3_0_OR_NEWER
+            if (hapticPlayer != null)
+            {
+                hapticPlayer.SendHapticImpulse(amplitude, duration, frequency);
+                return;
+            }
+#endif
+            if (controller != null)
+            {
+                controller.SendHapticImpulse(amplitude, duration);
+            }
+        }
+    }
+}`,
+  },
+  {
+    id: 'vr-haptic-and-audio',
+    fileName: 'VrHapticAndAudio.cs',
+    className: 'VrHapticAndAudio : MonoBehaviour',
+    roleSummary:
+      'Coordinates pooled 3D spatialized AudioSource playback and XR haptic feedback profiles for distinct bow-string materials and projectile impact surfaces.',
+    keyHighlights: [
+      'Defines BowStringFeedbackProfile presets (Sinew, BraidedHemp, BraidedKevlar, ArcaneNanofiber) with pitch-ramped creaks, twang resonance, and per-material haptic curves',
+      'Maintains a pre-warmed 3D spatial AudioSource pool (spatialBlend = 1.0f, logarithmic rolloff) mapped to SurfaceMaterialType (Metal, Wood, Stone)',
+      'Integrates cleanly with VrHapticController (XRBaseController.SendHapticImpulse fallback included) and ImpactParticleManager collider resolution',
+    ],
+    code: `using System;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.XR.Interaction.Toolkit;
+
+namespace MetaQuestArchery
+{
+    public enum BowStringMaterial
+    {
+        Sinew = 0,
+        BraidedHemp = 1,
+        BraidedKevlar = 2,
+        ArcaneNanofiber = 3
+    }
+
+    [Serializable]
+    public struct BowStringFeedbackProfile
+    {
+        public BowStringMaterial stringMaterial;
+        [Header("Spatial Bow Audio Clips")]
+        public AudioClip[] drawCreakClips;
+        public AudioClip releaseTwangClip;
+        public AudioClip fullDrawClickClip;
+        [Range(0.5f, 1.8f)] public float basePitch;
+        [Range(0.05f, 0.8f)] public float tensionPitchSpan;
+        [Range(0.1f, 1f)] public float audioVolume;
+
+        [Header("Haptic Response Scaling")]
+        [Range(0.1f, 1.5f)] public float drawTickAmplitude;
+        [Range(0.01f, 0.08f)] public float drawTickDuration;
+        [Range(0.1f, 1f)] public float releaseKickAmplitude;
+        [Range(0.02f, 0.16f)] public float releaseKickDuration;
+    }
+
+    [Serializable]
+    public struct ImpactSurfaceFeedbackProfile
+    {
+        public SurfaceMaterialType surfaceMaterial;
+        [Header("3D Spatial Impact Audio")]
+        public AudioClip[] impactClips;
+        [Range(0.1f, 1f)] public float baseVolume;
+        [Range(0.6f, 1.5f)] public float minPitch;
+        [Range(0.6f, 1.6f)] public float maxPitch;
+
+        [Header("XR Impact Haptic Resonance")]
+        [Range(0.05f, 1f)] public float hitHapticAmplitude;
+        [Range(0.02f, 0.18f)] public float hitHapticDuration;
+        public bool doubleTapResonance;
+    }
+
+    /// <summary>
+    /// Unified spatialized 3D audio & XR haptic feedback manager for bow-string materials
+    /// and arrow impact surfaces (Metal, Wood, Stone).
+    /// </summary>
+    public class VrHapticAndAudio : MonoBehaviour
+    {
+        public static VrHapticAndAudio Instance { get; private set; }
+
+        [Header("Active Bow String Configuration")]
+        [SerializeField] private BowStringMaterial activeStringMaterial = BowStringMaterial.BraidedKevlar;
+        [SerializeField] private Transform bowStringAudioAnchor;
+        [SerializeField] private AudioSource bowAudioSource;
+
+        [Header("Optional Direct XR Controller Fallbacks")]
+        [SerializeField] private XRBaseController bowHandController;
+        [SerializeField] private XRBaseController stringHandController;
+
+        [Header("Bow-String Material Profiles")]
+        [SerializeField] private BowStringFeedbackProfile[] bowStringProfiles =
+        {
+            new BowStringFeedbackProfile
+            {
+                stringMaterial = BowStringMaterial.Sinew,
+                basePitch = 0.86f,
+                tensionPitchSpan = 0.28f,
+                audioVolume = 0.78f,
+                drawTickAmplitude = 0.24f,
+                drawTickDuration = 0.028f,
+                releaseKickAmplitude = 0.58f,
+                releaseKickDuration = 0.095f
+            },
+            new BowStringFeedbackProfile
+            {
+                stringMaterial = BowStringMaterial.BraidedHemp,
+                basePitch = 0.94f,
+                tensionPitchSpan = 0.34f,
+                audioVolume = 0.82f,
+                drawTickAmplitude = 0.32f,
+                drawTickDuration = 0.024f,
+                releaseKickAmplitude = 0.64f,
+                releaseKickDuration = 0.085f
+            },
+            new BowStringFeedbackProfile
+            {
+                stringMaterial = BowStringMaterial.BraidedKevlar,
+                basePitch = 1.05f,
+                tensionPitchSpan = 0.42f,
+                audioVolume = 0.88f,
+                drawTickAmplitude = 0.28f,
+                drawTickDuration = 0.018f,
+                releaseKickAmplitude = 0.76f,
+                releaseKickDuration = 0.075f
+            },
+            new BowStringFeedbackProfile
+            {
+                stringMaterial = BowStringMaterial.ArcaneNanofiber,
+                basePitch = 1.18f,
+                tensionPitchSpan = 0.52f,
+                audioVolume = 0.92f,
+                drawTickAmplitude = 0.38f,
+                drawTickDuration = 0.016f,
+                releaseKickAmplitude = 0.88f,
+                releaseKickDuration = 0.068f
+            }
+        };
+
+        [Header("Arrow Impact Surface Profiles")]
+        [SerializeField] private ImpactSurfaceFeedbackProfile[] surfaceProfiles =
+        {
+            new ImpactSurfaceFeedbackProfile
+            {
+                surfaceMaterial = SurfaceMaterialType.Metal,
+                baseVolume = 0.95f,
+                minPitch = 0.96f,
+                maxPitch = 1.18f,
+                hitHapticAmplitude = 0.82f,
+                hitHapticDuration = 0.095f,
+                doubleTapResonance = true
+            },
+            new ImpactSurfaceFeedbackProfile
+            {
+                surfaceMaterial = SurfaceMaterialType.Wood,
+                baseVolume = 0.85f,
+                minPitch = 0.88f,
+                maxPitch = 1.08f,
+                hitHapticAmplitude = 0.56f,
+                hitHapticDuration = 0.075f,
+                doubleTapResonance = false
+            },
+            new ImpactSurfaceFeedbackProfile
+            {
+                surfaceMaterial = SurfaceMaterialType.Stone,
+                baseVolume = 0.90f,
+                minPitch = 0.82f,
+                maxPitch = 1.02f,
+                hitHapticAmplitude = 0.70f,
+                hitHapticDuration = 0.085f,
+                doubleTapResonance = false
+            }
+        };
+
+        [Header("Spatial 3D Audio Pool")]
+        [SerializeField] private int spatialPoolSize = 14;
+        [SerializeField] private float minSpatialDistance = 1.5f;
+        [SerializeField] private float maxSpatialDistance = 68f;
+        [SerializeField] private float drawTickCooldown = 0.045f;
+
+        private readonly Queue<AudioSource> _spatialAudioPool = new Queue<AudioSource>();
+        private readonly Dictionary<BowStringMaterial, BowStringFeedbackProfile> _stringMap =
+            new Dictionary<BowStringMaterial, BowStringFeedbackProfile>();
+        private readonly Dictionary<SurfaceMaterialType, ImpactSurfaceFeedbackProfile> _surfaceMap =
+            new Dictionary<SurfaceMaterialType, ImpactSurfaceFeedbackProfile>();
+
+        private float _lastDrawTickTime = -99f;
+
+        private void Awake()
+        {
+            if (Instance != null && Instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+            Instance = this;
+
+            RebuildLookupTables();
+            InitializeSpatialPool();
+            ConfigureBowAudioSource();
+        }
+
+        private void OnDestroy()
+        {
+            if (Instance == this) Instance = null;
+        }
+
+        private void RebuildLookupTables()
+        {
+            _stringMap.Clear();
+            if (bowStringProfiles != null)
+            {
+                for (int i = 0; i < bowStringProfiles.Length; i++)
+                {
+                    _stringMap[bowStringProfiles[i].stringMaterial] = bowStringProfiles[i];
+                }
+            }
+
+            _surfaceMap.Clear();
+            if (surfaceProfiles != null)
+            {
+                for (int i = 0; i < surfaceProfiles.Length; i++)
+                {
+                    _surfaceMap[surfaceProfiles[i].surfaceMaterial] = surfaceProfiles[i];
+                }
+            }
+        }
+
+        private void ConfigureBowAudioSource()
+        {
+            if (bowAudioSource == null)
+            {
+                GameObject anchorGo = bowStringAudioAnchor != null ? bowStringAudioAnchor.gameObject : gameObject;
+                bowAudioSource = anchorGo.GetComponent<AudioSource>() ?? anchorGo.AddComponent<AudioSource>();
+            }
+            bowAudioSource.spatialBlend = 1.0f;
+            bowAudioSource.rolloffMode = AudioRolloffMode.Logarithmic;
+            bowAudioSource.minDistance = 0.4f;
+            bowAudioSource.maxDistance = 18f;
+            bowAudioSource.playOnAwake = false;
+        }
+
+        private void InitializeSpatialPool()
+        {
+            for (int i = 0; i < Mathf.Max(4, spatialPoolSize); i++)
+            {
+                GameObject voiceGo = new GameObject($"SpatialAudioVoice_{i}");
+                voiceGo.transform.SetParent(transform, false);
+                AudioSource src = voiceGo.AddComponent<AudioSource>();
+                src.spatialBlend = 1.0f; // Full 3D HRTF spatialization on Meta Quest
+                src.rolloffMode = AudioRolloffMode.Logarithmic;
+                src.minDistance = minSpatialDistance;
+                src.maxDistance = maxSpatialDistance;
+                src.spread = 22f;
+                src.playOnAwake = false;
+                voiceGo.SetActive(false);
+                _spatialAudioPool.Enqueue(src);
+            }
+        }
+
+        public void SetBowStringMaterial(BowStringMaterial material)
+        {
+            activeStringMaterial = material;
+        }
+
+        /// <summary>
+        /// Triggers draw-tension audio creak + string-material ratchet haptic tick while drawing.
+        /// </summary>
+        public void PlayBowDrawTick(float normalizedTension)
+        {
+            if (Time.unscaledTime - _lastDrawTickTime < drawTickCooldown) return;
+            _lastDrawTickTime = Time.unscaledTime;
+
+            float t = Mathf.Clamp01(normalizedTension);
+            BowStringFeedbackProfile profile = GetActiveStringProfile();
+
+            if (bowAudioSource != null && profile.drawCreakClips != null && profile.drawCreakClips.Length > 0)
+            {
+                AudioClip clip = profile.drawCreakClips[UnityEngine.Random.Range(0, profile.drawCreakClips.Length)];
+                if (clip != null)
+                {
+                    bowAudioSource.pitch = profile.basePitch + t * profile.tensionPitchSpan;
+                    bowAudioSource.PlayOneShot(clip, profile.audioVolume * Mathf.Lerp(0.35f, 0.85f, t));
+                }
+            }
+
+            float amp = Mathf.Clamp01(profile.drawTickAmplitude * Mathf.Lerp(0.45f, 1.15f, t));
+            SendHapticBoth(amp, amp * 0.55f, profile.drawTickDuration);
+        }
+
+        /// <summary>
+        /// Triggers crisp full-draw click audio and tactile string-material lock pulse.
+        /// </summary>
+        public void PlayFullDrawLockFeedback()
+        {
+            BowStringFeedbackProfile profile = GetActiveStringProfile();
+            if (bowAudioSource != null && profile.fullDrawClickClip != null)
+            {
+                bowAudioSource.pitch = profile.basePitch + profile.tensionPitchSpan;
+                bowAudioSource.PlayOneShot(profile.fullDrawClickClip, profile.audioVolume * 0.9f);
+            }
+
+            if (VrHapticController.Instance != null)
+            {
+                VrHapticController.Instance.TriggerFullDrawHaptic();
+            }
+            else
+            {
+                SendHapticBoth(profile.releaseKickAmplitude * 0.8f, profile.releaseKickAmplitude * 0.5f, 0.08f);
+            }
+        }
+
+        /// <summary>
+        /// Fires spatialized bowstring release twang + scaled kick haptic impulse on arrow launch.
+        /// </summary>
+        public void PlayBowReleaseFeedback(float normalizedTension)
+        {
+            float t = Mathf.Clamp01(normalizedTension);
+            BowStringFeedbackProfile profile = GetActiveStringProfile();
+
+            if (bowAudioSource != null && profile.releaseTwangClip != null)
+            {
+                bowAudioSource.pitch = profile.basePitch + t * (profile.tensionPitchSpan * 0.7f);
+                bowAudioSource.PlayOneShot(profile.releaseTwangClip, profile.audioVolume * Mathf.Lerp(0.55f, 1f, t));
+            }
+
+            float kick = Mathf.Clamp01(profile.releaseKickAmplitude * Mathf.Lerp(0.4f, 1f, t));
+            SendHapticBoth(kick * 0.72f, kick, profile.releaseKickDuration);
+        }
+
+        /// <summary>
+        /// Resolves collider material tag and triggers spatialized 3D impact audio + surface haptic profile.
+        /// </summary>
+        public void TriggerImpactFromRaycastHit(RaycastHit hit, float impactSpeedMs = 45f, bool isCritical = false)
+        {
+            SurfaceMaterialType surface = ResolveSurfaceMaterial(hit.collider);
+            TriggerImpactFeedback(surface, hit.point, impactSpeedMs, isCritical);
+        }
+
+        /// <summary>
+        /// Plays spatial 3D impact sound at hitPoint and dispatches material-tuned controller haptics.
+        /// </summary>
+        public void TriggerImpactFeedback(
+            SurfaceMaterialType surface,
+            Vector3 hitPoint,
+            float impactSpeedMs = 45f,
+            bool isCritical = false)
+        {
+            if (!_surfaceMap.TryGetValue(surface, out ImpactSurfaceFeedbackProfile profile))
+            {
+                profile = new ImpactSurfaceFeedbackProfile
+                {
+                    surfaceMaterial = surface,
+                    baseVolume = 0.85f,
+                    minPitch = 0.92f,
+                    maxPitch = 1.1f,
+                    hitHapticAmplitude = 0.65f,
+                    hitHapticDuration = 0.08f,
+                    doubleTapResonance = surface == SurfaceMaterialType.Metal
+                };
+            }
+
+            float speedScale = Mathf.Clamp(impactSpeedMs / 55f, 0.45f, 1.15f);
+
+            // 1. Spatial 3D Audio Trigger at exact contact point
+            if (profile.impactClips != null && profile.impactClips.Length > 0)
+            {
+                AudioClip clip = profile.impactClips[UnityEngine.Random.Range(0, profile.impactClips.Length)];
+                if (clip != null)
+                {
+                    float pitch = UnityEngine.Random.Range(profile.minPitch, profile.maxPitch) * (isCritical ? 1.08f : 1f);
+                    PlaySpatialClipAtPoint(clip, hitPoint, profile.baseVolume * speedScale, pitch);
+                }
+            }
+
+            // 2. Material-Specific XR Haptic Resonance
+            if (profile.doubleTapResonance || isCritical)
+            {
+                StartCoroutine(PlayResonantDoublePulse(
+                    Mathf.Clamp01(profile.hitHapticAmplitude * speedScale),
+                    profile.hitHapticDuration
+                ));
+            }
+            else
+            {
+                float amp = Mathf.Clamp01(profile.hitHapticAmplitude * speedScale);
+                SendHapticBoth(amp, amp * 0.65f, profile.hitHapticDuration);
+            }
+        }
+
+        private void PlaySpatialClipAtPoint(AudioClip clip, Vector3 worldPos, float volume, float pitch)
+        {
+            if (_spatialAudioPool.Count == 0) return;
+
+            AudioSource src = _spatialAudioPool.Dequeue();
+            src.transform.position = worldPos;
+            src.gameObject.SetActive(true);
+            src.clip = clip;
+            src.volume = Mathf.Clamp01(volume);
+            src.pitch = Mathf.Clamp(pitch, 0.5f, 2f);
+            src.Play();
+            StartCoroutine(RecycleAudioVoiceAfter(src, (clip.length / Mathf.Max(0.5f, src.pitch)) + 0.05f));
+        }
+
+        private IEnumerator RecycleAudioVoiceAfter(AudioSource src, float seconds)
+        {
+            yield return new WaitForSecondsRealtime(seconds);
+            if (src != null)
+            {
+                src.Stop();
+                src.clip = null;
+                src.gameObject.SetActive(false);
+                _spatialAudioPool.Enqueue(src);
+            }
+        }
+
+        private IEnumerator PlayResonantDoublePulse(float amplitude, float duration)
+        {
+            SendHapticBoth(amplitude, amplitude * 0.75f, duration);
+            yield return new WaitForSecondsRealtime(0.06f);
+            SendHapticBoth(amplitude * 0.52f, amplitude * 0.35f, duration * 0.65f);
+        }
+
+        private void SendHapticBoth(float bowAmp, float stringAmp, float duration)
+        {
+            if (VrHapticController.Instance != null)
+            {
+                VrHapticController.Instance.SendImpulse(HapticHandTarget.BowHand, bowAmp, duration);
+                VrHapticController.Instance.SendImpulse(HapticHandTarget.StringHand, stringAmp, duration);
+                return;
+            }
+
+            if (bowHandController != null) bowHandController.SendHapticImpulse(Mathf.Clamp01(bowAmp), duration);
+            if (stringHandController != null) stringHandController.SendHapticImpulse(Mathf.Clamp01(stringAmp), duration);
+        }
+
+        private BowStringFeedbackProfile GetActiveStringProfile()
+        {
+            if (_stringMap.TryGetValue(activeStringMaterial, out BowStringFeedbackProfile found))
+            {
+                return found;
+            }
+            return new BowStringFeedbackProfile
+            {
+                stringMaterial = activeStringMaterial,
+                basePitch = 1f,
+                tensionPitchSpan = 0.35f,
+                audioVolume = 0.85f,
+                drawTickAmplitude = 0.28f,
+                drawTickDuration = 0.02f,
+                releaseKickAmplitude = 0.72f,
+                releaseKickDuration = 0.08f
+            };
+        }
+
+        private static SurfaceMaterialType ResolveSurfaceMaterial(Collider col)
+        {
+            if (col == null) return SurfaceMaterialType.Wood;
+            if (col.GetComponentInParent<EnemyHitboxZone>() != null) return SurfaceMaterialType.Metal;
+
+            SurfaceMaterialTag tag = col.GetComponentInParent<SurfaceMaterialTag>();
+            if (tag != null) return tag.materialType;
+
+            if (col.CompareTag("Metal") || col.CompareTag("Shield") || col.CompareTag("Armor"))
+                return SurfaceMaterialType.Metal;
+            if (col.CompareTag("Stone"))
+                return SurfaceMaterialType.Stone;
+
+            return SurfaceMaterialType.Wood;
+        }
+    }
+}`,
+  },
+  {
+    id: 'bow-stamina-controller',
+    fileName: 'BowStaminaController.cs',
+    className: 'BowStaminaController : MonoBehaviour',
+    roleSummary:
+      'Manages a VR diegetic bow stamina bar that drains proportionally to draw tension, regenerates after release, and dynamically scales aim stability and arrow draw speed.',
+    keyHighlights: [
+      'Drains stamina proportionally to VRBowController.NormalizedTension and regenerates smoothly after a post-release recovery delay with exhaustion hysteresis',
+      'Drives BowScopeStabilizer.SetDrawStability plus optional fatigue arm tremor and warning XR haptics via VrHapticController when stamina runs low',
+      'Exposes CurrentDrawSpeedMultiplier (1.0x -> 0.48x) and ComputeDampedDrawDistance helper alongside world-space Image/Slider stamina bar UI',
+    ],
+    code: `using UnityEngine;
+using UnityEngine.Events;
+using UnityEngine.UI;
+
+namespace MetaQuestArchery
+{
+    /// <summary>
+    /// VR Bow Stamina System: drains stamina while holding a drawn bowstring,
+    /// replenishes over time after release, and degrades aim stability & arrow draw speed when fatigued.
+    /// </summary>
+    public class BowStaminaController : MonoBehaviour
+    {
+        [Header("Core References")]
+        [SerializeField] private VRBowController bowController;
+        [SerializeField] private BowScopeStabilizer scopeStabilizer;
+        [Tooltip("Optional auxiliary pivot on the bow grip riser to apply arm-fatigue micro-tremor without touching headset pose.")]
+        [SerializeField] private Transform bowArmTremorPivot;
+
+        [Header("Stamina Pool & Drain/Regen Rates")]
+        [SerializeField] private float maxStamina = 100f;
+        [SerializeField] private float minDrawThreshold = 0.14f;
+        [SerializeField] private float lightDrawDrainPerSec = 7.5f;
+        [SerializeField] private float fullDrawDrainPerSec = 22.0f;
+        [SerializeField] private float regenPerSec = 18.5f;
+        [SerializeField] private float regenDelaySeconds = 0.65f;
+        [Range(0.10f, 0.50f)]
+        [SerializeField] private float exhaustionRecoverThreshold = 0.25f;
+
+        [Header("Impact on VR Aim Stability & Draw Speed")]
+        [Range(0.15f, 1.0f)]
+        [SerializeField] private float minAimStabilityAtEmpty = 0.20f;
+        [Range(0.30f, 1.0f)]
+        [SerializeField] private float minDrawSpeedMultiplier = 0.48f;
+        [SerializeField] private float maxArmTremorDeg = 1.65f;
+        [SerializeField] private float armTremorFrequencyHz = 7.5f;
+
+        [Header("Low Stamina XR Haptic Warning")]
+        [Range(0.05f, 0.40f)]
+        [SerializeField] private float lowStaminaWarningRatio = 0.25f;
+        [SerializeField] private float warningHapticInterval = 0.38f;
+        [SerializeField] private float warningHapticAmplitude = 0.18f;
+
+        [Header("Diegetic Stamina Bar UI (Bow / Wrist World-Space Canvas)")]
+        [SerializeField] private Image staminaFillImage;
+        [SerializeField] private Slider staminaSlider;
+        [SerializeField] private CanvasGroup staminaBarGroup;
+        [SerializeField] private Color healthyColor = new Color(0.13f, 0.77f, 0.37f, 1f);
+        [SerializeField] private Color strainedColor = new Color(0.96f, 0.62f, 0.04f, 1f);
+        [SerializeField] private Color exhaustedColor = new Color(0.94f, 0.27f, 0.27f, 1f);
+
+        [Header("Events")]
+        public UnityEvent<float> onStaminaNormalizedChanged;
+        public UnityEvent<float> onDrawSpeedMultiplierChanged;
+
+        private float _currentStamina;
+        private float _regenCooldownTimer;
+        private float _tremorPhase;
+        private float _nextWarningHapticTime;
+        private float _externalDrawTension = -1f;
+        private bool _isExhausted;
+
+        public float CurrentStamina => _currentStamina;
+        public float NormalizedStamina => maxStamina > 0f ? Mathf.Clamp01(_currentStamina / maxStamina) : 0f;
+        public bool IsExhausted => _isExhausted;
+
+        /// <summary>
+        /// Aim stability scalar (minAimStabilityAtEmpty..1.0) fed directly to BowScopeStabilizer.
+        /// </summary>
+        public float AimStabilityMultiplier { get; private set; } = 1f;
+
+        /// <summary>
+        /// Draw speed scalar (minDrawSpeedMultiplier..1.0) slowing bowstring pull rate under fatigue.
+        /// </summary>
+        public float CurrentDrawSpeedMultiplier { get; private set; } = 1f;
+
+        private void Awake()
+        {
+            _currentStamina = maxStamina;
+            RecalculatePerformanceScalars(0f);
+            UpdateStaminaBarUI(true);
+        }
+
+        private void Update()
+        {
+            float tension = ResolveCurrentDrawTension();
+            bool isDrawing = tension >= minDrawThreshold;
+
+            UpdateStaminaPool(tension, isDrawing, Time.deltaTime);
+            RecalculatePerformanceScalars(tension);
+            ApplyStabilityAndTremor(tension, isDrawing, Time.deltaTime);
+            UpdateStaminaBarUI(false);
+
+            if (isDrawing)
+            {
+                MaybeTriggerExhaustionTrembleHaptic();
+            }
+        }
+
+        /// <summary>
+        /// Optional hook if a custom bow script drives tension instead of VRBowController.
+        /// Pass -1 to resume reading VRBowController.NormalizedTension automatically.
+        /// </summary>
+        public void SetExternalDrawTension(float normalizedTension)
+        {
+            _externalDrawTension = normalizedTension < 0f ? -1f : Mathf.Clamp01(normalizedTension);
+        }
+
+        /// <summary>
+        /// Smoothly limits bowstring draw velocity based on current fatigue state.
+        /// Call from custom XR bow draw logic to enforce slower pulls while fatigued.
+        /// </summary>
+        public float ComputeFatiguedDrawDistance(
+            float currentDrawDistance,
+            float targetHandPullDistance,
+            float maxDrawDistance,
+            float deltaTime)
+        {
+            float clampedTarget = Mathf.Clamp(targetHandPullDistance, 0f, maxDrawDistance);
+            if (clampedTarget <= currentDrawDistance)
+            {
+                // Relaxing the bowstring is never slowed down
+                return clampedTarget;
+            }
+
+            float maxPullRate = Mathf.Lerp(0.45f, 3.2f, CurrentDrawSpeedMultiplier);
+            return Mathf.MoveTowards(currentDrawDistance, clampedTarget, maxPullRate * deltaTime);
+        }
+
+        public void RefillStaminaInstant()
+        {
+            _currentStamina = maxStamina;
+            _isExhausted = false;
+            _regenCooldownTimer = 0f;
+            RecalculatePerformanceScalars(0f);
+            UpdateStaminaBarUI(true);
+        }
+
+        private float ResolveCurrentDrawTension()
+        {
+            if (_externalDrawTension >= 0f) return _externalDrawTension;
+            return bowController != null ? Mathf.Clamp01(bowController.NormalizedTension) : 0f;
+        }
+
+        private void UpdateStaminaPool(float tension, bool isDrawing, float dt)
+        {
+            float prevNorm = NormalizedStamina;
+
+            if (isDrawing)
+            {
+                // Higher draw tension burns noticeably more shoulder & draw-arm stamina
+                float normalizedPull = Mathf.InverseLerp(minDrawThreshold, 1f, tension);
+                float drainRate = Mathf.Lerp(lightDrawDrainPerSec, fullDrawDrainPerSec, normalizedPull * normalizedPull);
+                _currentStamina = Mathf.Max(0f, _currentStamina - drainRate * dt);
+                _regenCooldownTimer = regenDelaySeconds;
+
+                if (_currentStamina <= 0.01f)
+                {
+                    _isExhausted = true;
+                }
+            }
+            else
+            {
+                if (_regenCooldownTimer > 0f)
+                {
+                    _regenCooldownTimer = Mathf.Max(0f, _regenCooldownTimer - dt);
+                }
+                else if (_currentStamina < maxStamina)
+                {
+                    _currentStamina = Mathf.Min(maxStamina, _currentStamina + regenPerSec * dt);
+                    if (_isExhausted && NormalizedStamina >= exhaustionRecoverThreshold)
+                    {
+                        _isExhausted = false;
+                    }
+                }
+            }
+
+            float nextNorm = NormalizedStamina;
+            if (!Mathf.Approximately(prevNorm, nextNorm))
+            {
+                onStaminaNormalizedChanged?.Invoke(nextNorm);
+            }
+        }
+
+        private void RecalculatePerformanceScalars(float tension)
+        {
+            float staminaRatio = NormalizedStamina;
+            float prevDrawSpeed = CurrentDrawSpeedMultiplier;
+
+            // Smooth S-curve: full precision above 55% stamina, steeper penalty below 45% or while exhausted
+            float smoothFactor = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.05f, 0.65f, staminaRatio));
+            float exhaustedPenalty = _isExhausted ? 0.72f : 1.0f;
+
+            AimStabilityMultiplier = Mathf.Clamp01(
+                Mathf.Lerp(minAimStabilityAtEmpty, 1.0f, smoothFactor) * exhaustedPenalty
+            );
+
+            CurrentDrawSpeedMultiplier = Mathf.Clamp(
+                Mathf.Lerp(minDrawSpeedMultiplier, 1.0f, smoothFactor) * (_isExhausted ? 0.85f : 1.0f),
+                minDrawSpeedMultiplier * 0.75f,
+                1.0f
+            );
+
+            if (!Mathf.Approximately(prevDrawSpeed, CurrentDrawSpeedMultiplier))
+            {
+                onDrawSpeedMultiplierChanged?.Invoke(CurrentDrawSpeedMultiplier);
+            }
+        }
+
+        private void ApplyStabilityAndTremor(float tension, bool isDrawing, float dt)
+        {
+            if (scopeStabilizer != null)
+            {
+                scopeStabilizer.SetDrawStability(AimStabilityMultiplier);
+            }
+
+            if (bowArmTremorPivot == null) return;
+
+            if (isDrawing && AimStabilityMultiplier < 0.92f)
+            {
+                float fatigue = 1f - AimStabilityMultiplier;
+                _tremorPhase += dt * armTremorFrequencyHz * Mathf.PI * 2f;
+
+                float pitchJitter = Mathf.Sin(_tremorPhase * 1.13f) * maxArmTremorDeg * fatigue * tension;
+                float yawJitter = Mathf.Cos(_tremorPhase * 0.87f) * maxArmTremorDeg * 0.75f * fatigue * tension;
+
+                Quaternion targetRot = Quaternion.Euler(pitchJitter, yawJitter, 0f);
+                bowArmTremorPivot.localRotation = Quaternion.Slerp(
+                    bowArmTremorPivot.localRotation,
+                    targetRot,
+                    1f - Mathf.Exp(-14f * dt)
+                );
+            }
+            else
+            {
+                bowArmTremorPivot.localRotation = Quaternion.Slerp(
+                    bowArmTremorPivot.localRotation,
+                    Quaternion.identity,
+                    1f - Mathf.Exp(-10f * dt)
+                );
+            }
+        }
+
+        private void MaybeTriggerExhaustionTrembleHaptic()
+        {
+            float ratio = NormalizedStamina;
+            if (ratio > lowStaminaWarningRatio || VrHapticController.Instance == null) return;
+
+            if (Time.unscaledTime >= _nextWarningHapticTime)
+            {
+                _nextWarningHapticTime = Time.unscaledTime + warningHapticInterval;
+                float severity = 1f - Mathf.InverseLerp(0f, lowStaminaWarningRatio, ratio);
+                float amp = Mathf.Clamp01(warningHapticAmplitude * (0.65f + severity * 0.75f));
+                VrHapticController.Instance.SendImpulse(HapticHandTarget.BowHand, amp, 0.045f);
+            }
+        }
+
+        private void UpdateStaminaBarUI(bool immediate)
+        {
+            float ratio = NormalizedStamina;
+
+            if (staminaSlider != null)
+            {
+                staminaSlider.value = ratio;
+            }
+
+            if (staminaFillImage != null)
+            {
+                staminaFillImage.fillAmount = ratio;
+                Color targetCol = _isExhausted
+                    ? exhaustedColor
+                    : ratio > 0.5f
+                        ? Color.Lerp(strainedColor, healthyColor, (ratio - 0.5f) * 2f)
+                        : Color.Lerp(exhaustedColor, strainedColor, ratio * 2f);
+                staminaFillImage.color = targetCol;
+            }
+
+            if (staminaBarGroup != null)
+            {
+                float targetAlpha = ratio < 0.995f ? 1f : 0f;
+                staminaBarGroup.alpha = immediate
+                    ? targetAlpha
+                    : Mathf.MoveTowards(staminaBarGroup.alpha, targetAlpha, Time.deltaTime * 4.5f);
+            }
+        }
+    }
+}`,
+  },
 ];

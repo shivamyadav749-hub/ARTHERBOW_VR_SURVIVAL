@@ -7,6 +7,7 @@ import {
   Eye,
   EyeOff,
   Flag,
+  Gamepad2,
   Glasses,
   Heart,
   Layers,
@@ -33,9 +34,12 @@ import {
   GameState,
   ImpactMaterial,
   LiveBallisticsTelemetry,
+  MobileControlBridge,
+  MobileControlInput,
   ScorePopup,
 } from './types/archery';
 import { ArcheryCanvas } from './components/ArcheryCanvas';
+import { MobileControlsOverlay } from './components/MobileControlsOverlay';
 import { UnityScriptModal } from './components/UnityScriptModal';
 import { SettingsModal } from './components/SettingsModal';
 import { LevelProgressRecord, LevelSelectModal } from './components/LevelSelectModal';
@@ -148,7 +152,33 @@ export default function App() {
   const [vrSupportReason, setVrSupportReason] = useState<string>('');
   const [isInVr, setIsInVr] = useState<boolean>(false);
   const [vrNotice, setVrNotice] = useState<string | null>(null);
+  const [isTouchViewport, setIsTouchViewport] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return (
+      window.matchMedia('(pointer: coarse)').matches ||
+      window.innerWidth < 1024 ||
+      'ontouchstart' in window
+    );
+  });
+  const [isCrouchedState, setIsCrouchedState] = useState<boolean>(false);
+  const [showMobileTools, setShowMobileTools] = useState<boolean>(false);
   const vrToggleRef = useRef<(() => Promise<void>) | null>(null);
+  const mobileInputRef = useRef<MobileControlInput>({
+    moveX: 0,
+    moveY: 0,
+    sprintLocked: false,
+  });
+  const mobileBridgeRef = useRef<MobileControlBridge | null>(null);
+
+  useEffect(() => {
+    const updateViewportMode = () => {
+      const coarse = window.matchMedia('(pointer: coarse)').matches;
+      setIsTouchViewport(coarse || window.innerWidth < 1024 || 'ontouchstart' in window);
+    };
+    updateViewportMode();
+    window.addEventListener('resize', updateViewportMode);
+    return () => window.removeEventListener('resize', updateViewportMode);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -229,6 +259,7 @@ export default function App() {
       setStreak(0);
       setEarnedStars(0);
       setWindSpeedX(nextCfg.windSpeedX);
+      setIsCrouchedState(false);
       setClearArrowsSignal((c) => c + 1);
       setTelemetry((prev) => ({
         ...prev,
@@ -566,6 +597,21 @@ export default function App() {
     isScriptModalOpen || isSettingsModalOpen || isLevelModalOpen || isArmoryModalOpen;
   const effectiveCanvasState: GameState = anyModalOpen ? 'paused' : gameState;
   const hpPercent = Math.round((playerHp / Math.max(1, defenseStats.maxHp)) * 100);
+  const mobileControlsActive =
+    !isInVr &&
+    (calibration.mobileControlsMode === 'on' ||
+      (calibration.mobileControlsMode === 'auto' && isTouchViewport));
+
+  const handleToggleTouchControls = useCallback(() => {
+    setCalibration((prev) => ({
+      ...prev,
+      mobileControlsMode:
+        prev.mobileControlsMode === 'on' ||
+        (prev.mobileControlsMode === 'auto' && isTouchViewport)
+          ? 'off'
+          : 'on',
+    }));
+  }, [isTouchViewport]);
 
   const handleEnterOrExitVR = useCallback(async () => {
     setVrNotice(null);
@@ -606,7 +652,7 @@ export default function App() {
   }, [gameState, canAdvanceToNextLevel, nextLevel, currentLevel, startLevel]);
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#070B12] select-none">
+    <div className="relative w-full h-[100dvh] overflow-hidden bg-[#070B12] select-none touch-none">
       {/* Isolated 60fps Three.js WebGL Viewport */}
       <ArcheryCanvas
         gameState={effectiveCanvasState}
@@ -623,6 +669,10 @@ export default function App() {
         earnedStars={earnedStars}
         coins={coins}
         clearArrowsSignal={clearArrowsSignal}
+        isMobileTouchActive={mobileControlsActive}
+        mobileInputRef={mobileInputRef}
+        mobileBridgeRef={mobileBridgeRef}
+        onCrouchStateChange={setIsCrouchedState}
         vrToggleRef={vrToggleRef}
         onVrStateChange={setIsInVr}
         onSelectArrowFromVr={handleSelectArrow}
@@ -637,7 +687,7 @@ export default function App() {
 
       {/* WebXR Headset Status Notice */}
       {vrNotice && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 max-w-md bg-[#0B101B]/95 border border-sky-400/50 text-slate-200 rounded-xl px-4 py-3 shadow-2xl flex items-start gap-3">
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 w-[min(420px,calc(100vw-24px))] bg-[#0B101B]/95 border border-sky-400/50 text-slate-200 rounded-xl px-4 py-3 shadow-2xl flex items-start gap-3">
           <Glasses className="w-5 h-5 text-sky-400 shrink-0 mt-0.5" />
           <p className="text-xs leading-relaxed flex-1">{vrNotice}</p>
           <button
@@ -652,68 +702,68 @@ export default function App() {
 
       {/* 1. TITLE SCREEN OVERLAY */}
       {gameState === 'title' && (
-        <div className="fixed inset-0 z-20 flex flex-col justify-between p-8 md:p-14 bg-gradient-to-t from-[#070B12]/95 via-[#070B12]/40 to-transparent pointer-events-auto">
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-300 font-mono">
-            <div className="flex items-center gap-2">
+        <div className="fixed inset-0 z-20 flex flex-col justify-between gap-6 overflow-y-auto p-4 sm:p-8 md:p-14 bg-gradient-to-t from-[#070B12]/95 via-[#070B12]/45 to-transparent pointer-events-auto">
+          <div className="flex flex-wrap items-center justify-between gap-2.5 text-xs text-slate-300 font-mono">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold text-white">AETHERBOW VR SURVIVAL</span>
-              <span aria-hidden="true">·</span>
-              <span>5 Seasons · Levels 1–50 · Diegetic Armor Armory</span>
+              <span className="hidden sm:inline" aria-hidden="true">·</span>
+              <span className="hidden sm:inline">5 Seasons · Levels 1–50 · Diegetic Armor Armory</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2.5">
               <button
                 onClick={() => setIsArmoryModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-amber-300 bg-[#0B101B]/90 hover:bg-[#151F32] border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-xs font-semibold text-amber-300 bg-[#0B101B]/90 hover:bg-[#151F32] border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
               >
-                <Coins className="w-4 h-4 text-amber-400" />
-                <span>Armory · {coins} Coins [I]</span>
+                <Coins className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />
+                <span>{coins} Coins</span>
               </button>
               <button
                 onClick={() => setIsLevelModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-200 bg-[#0B101B]/90 hover:bg-[#151F32] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-xs font-semibold text-slate-200 bg-[#0B101B]/90 hover:bg-[#151F32] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
               >
-                <Layers className="w-4 h-4 text-sky-400" />
-                <span>5 Seasons (★ {totalStarsEarned}/150) [L]</span>
+                <Layers className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-sky-400" />
+                <span>5 Seasons (★ {totalStarsEarned}/150)</span>
               </button>
               <button
                 onClick={() => setIsSettingsModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-200 bg-[#0B101B]/90 hover:bg-[#151F32] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-xs font-semibold text-slate-200 bg-[#0B101B]/90 hover:bg-[#151F32] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
               >
-                <Sliders className="w-4 h-4 text-emerald-400" />
-                <span>Calibration [K]</span>
+                <Sliders className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
+                <span>Settings</span>
               </button>
               <button
                 onClick={() => setIsScriptModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-sky-300 bg-[#0B101B]/90 hover:bg-[#151F32] border border-sky-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-xs font-semibold text-sky-300 bg-[#0B101B]/90 hover:bg-[#151F32] border border-sky-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
               >
-                <Code2 className="w-4 h-4" />
-                <span>Unity C# Scripts (25 Files)</span>
+                <Code2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                <span>Unity C# (28)</span>
               </button>
             </div>
           </div>
 
-          <div className="max-w-2xl my-auto pt-12">
-            <div className="text-xs font-mono tracking-wider text-sky-400 mb-2">
-              META QUEST VR SURVIVAL · 3D LOCOMOTION, COVER STEALTH & HITBOX MULTIPLIERS
+          <div className="max-w-2xl my-auto pt-4 sm:pt-10">
+            <div className="text-[11px] sm:text-xs font-mono tracking-wider text-sky-400 mb-2">
+              META QUEST VR · DESKTOP · MOBILE TOUCH ARCHERY SURVIVAL
             </div>
             <h1
-              className="text-4xl md:text-6xl font-bold tracking-tight text-white font-display leading-[1.06] mb-5"
+              className="text-3xl sm:text-5xl md:text-6xl font-bold tracking-tight text-white font-display leading-[1.06] mb-3.5 sm:mb-5"
               style={{ textWrap: 'balance' }}
             >
               AetherBow VR: Ancient Shieldwall Survival
             </h1>
 
-            <p className="text-sm md:text-base text-slate-300 leading-relaxed mb-7 max-w-xl">
+            <p className="text-xs sm:text-sm md:text-base text-slate-300 leading-relaxed mb-5 sm:mb-7 max-w-xl">
               Strafe, sprint, and crouch behind stone bastions & timber cover across 5 Seasons and
               50 levels. Break enemy sightlines to dodge incoming javelins, land 2.5x headshots above
-              bronze shields, forge ancient armor with earned coins, and inspect the 25-script Unity
+              bronze shields, forge ancient armor with earned coins, and inspect the 28-script Unity
               Quest C# codebase.
             </p>
 
             {/* Primary & Secondary CTAs */}
-            <div className="flex flex-wrap items-center gap-3.5">
+            <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2.5 sm:gap-3.5">
               <button
                 onClick={() => startLevel(currentLevel, true)}
-                className="flex items-center gap-2.5 px-7 py-3.5 text-sm font-bold text-slate-950 bg-sky-400 hover:bg-sky-300 rounded-lg shadow-lg transition-transform active:scale-98 cursor-pointer whitespace-nowrap"
+                className="flex items-center justify-center gap-2.5 px-6 py-3.5 text-sm font-bold text-slate-950 bg-sky-400 hover:bg-sky-300 rounded-lg shadow-lg transition-transform active:scale-98 cursor-pointer whitespace-nowrap"
               >
                 <Play className="w-4 h-4 fill-current" />
                 <span>
@@ -723,7 +773,7 @@ export default function App() {
 
               <button
                 onClick={handleEnterOrExitVR}
-                className={`flex items-center gap-2.5 px-6 py-3.5 text-sm font-bold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                className={`flex items-center justify-center gap-2.5 px-5 py-3 sm:py-3.5 text-sm font-bold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
                   vrSupported
                     ? 'text-emerald-200 bg-emerald-950/80 hover:bg-emerald-900 border-emerald-400/60'
                     : 'text-sky-200 bg-[#0F172A] hover:bg-slate-800 border-sky-400/40'
@@ -733,29 +783,37 @@ export default function App() {
                 <span>{isInVr ? 'Exit VR' : vrSupported ? 'Enter VR Headset' : 'VR Mode (WebXR)'}</span>
               </button>
 
-              <button
-                onClick={() => setIsArmoryModalOpen(true)}
-                className="flex items-center gap-2.5 px-5 py-3.5 text-sm font-semibold text-amber-300 bg-[#0F172A] hover:bg-slate-800 border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Shield className="w-4 h-4 text-amber-400" />
-                <span>Ancient Armory [I]</span>
-              </button>
+              <div className="grid grid-cols-2 sm:flex gap-2.5 sm:gap-3.5">
+                <button
+                  onClick={() => setIsArmoryModalOpen(true)}
+                  className="flex items-center justify-center gap-2 px-4 py-3 sm:py-3.5 text-xs sm:text-sm font-semibold text-amber-300 bg-[#0F172A] hover:bg-slate-800 border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Shield className="w-4 h-4 text-amber-400" />
+                  <span>Armory</span>
+                </button>
 
-              <button
-                onClick={() => setIsLevelModalOpen(true)}
-                className="flex items-center gap-2.5 px-5 py-3.5 text-sm font-semibold text-white bg-[#0F172A] hover:bg-slate-800 border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Layers className="w-4 h-4 text-sky-400" />
-                <span>5 Seasons / 50 Levels</span>
-              </button>
+                <button
+                  onClick={() => setIsLevelModalOpen(true)}
+                  className="flex items-center justify-center gap-2 px-4 py-3 sm:py-3.5 text-xs sm:text-sm font-semibold text-white bg-[#0F172A] hover:bg-slate-800 border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Layers className="w-4 h-4 text-sky-400" />
+                  <span>50 Levels</span>
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-4 text-xs text-slate-400 font-mono">
-            <span>
-              WASD / Arrows Move · Shift Run · X / Q Crouch & Hide · Mouse Aim · Hold LMB / Space
-              Shoot · 1–5 Arrows · I Armory · C C# Code
-            </span>
+          <div className="pt-3 sm:pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 sm:gap-4 text-[11px] sm:text-xs text-slate-400 font-mono">
+            {mobileControlsActive ? (
+              <span>
+                Touch Controls: Left Stick Move/Sprint · Swipe Viewport Aim · Hold Draw & Slide to Aim · Crouch Toggle
+              </span>
+            ) : (
+              <span>
+                WASD / Arrows Move · Shift Run · X / Q Crouch & Hide · Mouse Aim · Hold LMB / Space
+                Shoot · 1–5 Arrows · I Armory · C C# Code
+              </span>
+            )}
             <span className="text-slate-300">
               {defenseStats.armor.name} + {defenseStats.helmet.name} ({defenseStats.maxHp} HP)
             </span>
@@ -766,19 +824,22 @@ export default function App() {
       {/* 2. PLAYING HUD */}
       {gameState !== 'title' && (
         <>
-          <div className="fixed top-0 left-0 right-0 z-10 p-4 md:px-6 flex items-start justify-between gap-3 pointer-events-none">
+          <div
+            className="fixed top-0 left-0 right-0 z-10 p-2.5 sm:p-4 md:px-6 flex items-start justify-between gap-2 sm:gap-3 pointer-events-none"
+            style={{ paddingTop: 'max(0.625rem, env(safe-area-inset-top))' }}
+          >
             {/* Top-Left Survival Health, Wave & Hitbox Readout */}
-            <div className="bg-[#0B101B]/90 border border-white/10 rounded-lg px-4 py-3 pointer-events-auto min-w-[340px]">
-              <div className="flex items-center justify-between gap-3 pb-2 mb-2 border-b border-white/10">
-                <div className="flex items-center gap-2 text-xs font-mono">
-                  <span className="font-bold text-white">LVL {currentLevel}/50</span>
-                  <span className="text-slate-400">·</span>
-                  <span className="text-slate-200 font-semibold">
+            <div className="bg-[#0B101B]/90 border border-white/10 rounded-lg px-3 py-2 sm:px-4 sm:py-3 pointer-events-auto flex-1 max-w-[390px] sm:flex-none sm:min-w-[340px] min-w-0">
+              <div className="flex items-center justify-between gap-2 pb-1.5 sm:pb-2 mb-1.5 sm:mb-2 border-b border-white/10">
+                <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs font-mono min-w-0">
+                  <span className="font-bold text-white shrink-0">LVL {currentLevel}/50</span>
+                  <span className="text-slate-400 shrink-0">·</span>
+                  <span className="text-slate-200 font-semibold truncate">
                     S{seasonConfig.id}: {seasonConfig.name}
                   </span>
                 </div>
                 <span
-                  className="text-[10px] font-mono font-bold px-2 py-0.5 rounded"
+                  className="text-[10px] font-mono font-bold px-1.5 sm:px-2 py-0.5 rounded shrink-0"
                   style={{
                     color: seasonConfig.accentHex,
                     backgroundColor: seasonConfig.badgeBgHex,
@@ -788,30 +849,31 @@ export default function App() {
                 </span>
               </div>
 
-              <div className="flex items-center gap-4 font-mono tabular-nums">
+              <div className="flex items-center gap-2.5 sm:gap-4 font-mono tabular-nums">
                 <div>
-                  <div className="text-[11px] text-slate-400 flex items-center gap-1">
-                    <Heart className="w-3 h-3 text-emerald-400" />
-                    <span>HEALTH ({defenseStats.damageReductionPct}% ARMOR)</span>
+                  <div className="text-[10px] sm:text-[11px] text-slate-400 flex items-center gap-1">
+                    <Heart className="w-3 h-3 text-emerald-400 shrink-0" />
+                    <span className="hidden sm:inline">HEALTH ({defenseStats.damageReductionPct}% ARMOR)</span>
+                    <span className="sm:hidden">HP ({defenseStats.damageReductionPct}%)</span>
                   </div>
                   <div
-                    className={`text-lg font-bold ${
+                    className={`text-sm sm:text-lg font-bold ${
                       hpPercent <= 35 ? 'text-rose-400' : 'text-emerald-400'
                     }`}
                   >
                     {playerHp}{' '}
-                    <span className="text-xs font-normal text-slate-400">
+                    <span className="text-[11px] sm:text-xs font-normal text-slate-400">
                       / {defenseStats.maxHp}
                     </span>
                   </div>
                 </div>
-                <div className="h-7 w-px bg-white/10" />
+                <div className="h-6 sm:h-7 w-px bg-white/10" />
                 <div>
-                  <div className="text-[11px] text-slate-400">ACTIVE · LIMIT</div>
-                  <div className="text-lg font-bold text-amber-400">
+                  <div className="text-[10px] sm:text-[11px] text-slate-400">ACTIVE · LIMIT</div>
+                  <div className="text-sm sm:text-lg font-bold text-amber-400">
                     {enemiesRemaining}{' '}
-                    <span className="text-xs font-normal text-slate-400">
-                      · {enemiesDefeatedCount}/{levelEnemyLimit} slain
+                    <span className="text-[11px] sm:text-xs font-normal text-slate-400">
+                      · {enemiesDefeatedCount}/{levelEnemyLimit}
                     </span>
                   </div>
                 </div>
@@ -838,7 +900,7 @@ export default function App() {
               </div>
 
               {/* Player Health Bar */}
-              <div className="mt-2 w-full h-1.5 bg-[#070B12] rounded-full overflow-hidden border border-white/5">
+              <div className="mt-1.5 sm:mt-2 w-full h-1.5 bg-[#070B12] rounded-full overflow-hidden border border-white/5">
                 <div
                   className="h-full transition-all duration-200 rounded-full"
                   style={{
@@ -849,23 +911,23 @@ export default function App() {
                 />
               </div>
 
-              {/* Mission Task: Endless Incoming Waves until Crossing Ending Line */}
-              <div className="mt-2.5 pt-2 border-t border-white/10">
-                <div className="flex items-center justify-between gap-2 text-[11px] font-mono mb-1.5">
-                  <div className="flex items-center gap-1.5 text-slate-300">
+              {/* Mission Task: Waves until Crossing Ending Line */}
+              <div className="mt-2 pt-1.5 sm:pt-2 border-t border-white/10">
+                <div className="flex items-center justify-between gap-2 text-[10px] sm:text-[11px] font-mono mb-1">
+                  <div className="flex items-center gap-1.5 text-slate-300 min-w-0">
                     <Flag
-                      className={`w-3.5 h-3.5 ${
+                      className={`w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 ${
                         telemetry.crossedFinishLine ? 'text-emerald-400' : 'text-amber-400'
                       }`}
                     />
-                    <span className="font-semibold">
+                    <span className="font-semibold truncate">
                       {telemetry.crossedFinishLine
-                        ? 'ENDING LINE REACHED · EXTRACTION COMPLETE!'
-                        : `SURVIVE WAVES (${enemiesRemaining} ACTIVE) & REACH ENDING LINE`}
+                        ? 'ENDING LINE REACHED!'
+                        : `REACH ENDING LINE (${enemiesRemaining} ACTIVE)`}
                     </span>
                   </div>
                   <span
-                    className={`font-bold tabular-nums ${
+                    className={`font-bold tabular-nums shrink-0 ${
                       telemetry.crossedFinishLine ? 'text-emerald-400' : 'text-amber-300'
                     }`}
                   >
@@ -875,7 +937,7 @@ export default function App() {
                   </span>
                 </div>
 
-                <div className="relative w-full h-2 bg-[#070B12] rounded-full overflow-hidden border border-white/10">
+                <div className="relative w-full h-1.5 sm:h-2 bg-[#070B12] rounded-full overflow-hidden border border-white/10">
                   <div
                     className="h-full transition-all duration-150 rounded-full"
                     style={{
@@ -884,7 +946,7 @@ export default function App() {
                     }}
                   />
                 </div>
-                <div className="mt-1 flex items-center justify-between text-[10px] font-mono text-slate-400">
+                <div className="hidden sm:flex mt-1 items-center justify-between text-[10px] font-mono text-slate-400">
                   <span>START LINE</span>
                   <span>
                     {telemetry.routeProgressPct}% TRAIL ({telemetry.distanceToFinishMeters.toFixed(1)}m left)
@@ -895,10 +957,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Last Hitbox Impact Line */}
-              <div className="mt-2 pt-2 border-t border-white/10 flex items-center gap-2 text-xs text-slate-300 font-mono tabular-nums">
+              {/* Last Hitbox Impact Line (Desktop & Tablet) */}
+              <div className="hidden sm:flex mt-2 pt-2 border-t border-white/10 items-center gap-2 text-xs text-slate-300 font-mono tabular-nums">
                 <span className="text-slate-400">Combat:</span>
-                <span className="text-white font-semibold">{lastHitSummary.ring}</span>
+                <span className="text-white font-semibold truncate">{lastHitSummary.ring}</span>
                 {lastHitSummary.damage > 0 && lastHitSummary.distance > 0 && (
                   <>
                     <span aria-hidden="true">·</span>
@@ -917,60 +979,83 @@ export default function App() {
             </div>
 
             {/* Top-Right Quick Action Cluster */}
-            <div className="flex flex-wrap items-center justify-end gap-2 pointer-events-auto">
-              <button
-                onClick={handleEnterOrExitVR}
-                className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
-                  isInVr
-                    ? 'text-rose-200 bg-rose-950/90 border-rose-400/50'
-                    : vrSupported
-                    ? 'text-emerald-300 bg-emerald-950/80 hover:bg-emerald-900 border-emerald-400/50'
-                    : 'text-sky-200 bg-[#0B101B]/90 hover:bg-[#162033] border-sky-400/40'
-                }`}
-              >
-                <Glasses className="w-4 h-4 text-emerald-400" />
-                <span>{isInVr ? 'Exit VR' : 'Enter VR'}</span>
-              </button>
+            <div className="flex flex-col sm:flex-row flex-wrap items-end sm:items-center justify-end gap-1.5 sm:gap-2 pointer-events-auto shrink-0">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <button
+                  onClick={handleToggleTouchControls}
+                  className={`flex items-center gap-1.5 p-2 md:px-3 md:py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                    mobileControlsActive
+                      ? 'text-sky-300 bg-sky-950/70 border-sky-400/50'
+                      : 'text-slate-300 bg-[#0B101B]/90 hover:bg-[#162033] border-white/15'
+                  }`}
+                  title="Toggle On-Screen Mobile Touch Controls"
+                  aria-label="Toggle Touch Controls"
+                >
+                  <Gamepad2 className="w-4 h-4" />
+                  <span className="hidden md:inline">{mobileControlsActive ? 'Touch On' : 'Touch Off'}</span>
+                </button>
 
-              <button
-                onClick={() => setIsArmoryModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-amber-300 bg-[#0B101B]/90 hover:bg-[#162033] border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Shield className="w-4 h-4 text-amber-400" />
-                <span>Armory [I]</span>
-              </button>
+                <button
+                  onClick={handleEnterOrExitVR}
+                  className={`hidden sm:flex items-center gap-2 p-2 md:px-3.5 md:py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                    isInVr
+                      ? 'text-rose-200 bg-rose-950/90 border-rose-400/50'
+                      : vrSupported
+                      ? 'text-emerald-300 bg-emerald-950/80 hover:bg-emerald-900 border-emerald-400/50'
+                      : 'text-sky-200 bg-[#0B101B]/90 hover:bg-[#162033] border-sky-400/40'
+                  }`}
+                  aria-label={isInVr ? 'Exit VR' : 'Enter VR'}
+                >
+                  <Glasses className="w-4 h-4 text-emerald-400" />
+                  <span className="hidden md:inline">{isInVr ? 'Exit VR' : 'Enter VR'}</span>
+                </button>
 
-              <button
-                onClick={() => setIsLevelModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Layers className="w-4 h-4 text-sky-400" />
-                <span>Levels [L]</span>
-              </button>
+                <button
+                  onClick={() => setGameState(gameState === 'paused' ? 'playing' : 'paused')}
+                  className="p-2 text-slate-200 hover:text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/15 rounded-lg transition-colors cursor-pointer"
+                  aria-label="Pause Game"
+                >
+                  <Pause className="w-4 h-4" />
+                </button>
+              </div>
 
-              <button
-                onClick={() => setIsSettingsModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-emerald-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Sliders className="w-4 h-4 text-emerald-400" />
-                <span>Calibration [K]</span>
-              </button>
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <button
+                  onClick={() => setIsArmoryModalOpen(true)}
+                  className="flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-amber-300 bg-[#0B101B]/90 hover:bg-[#162033] border border-amber-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                  aria-label="Open Armory"
+                >
+                  <Shield className="w-4 h-4 text-amber-400" />
+                  <span className="hidden md:inline">Armory [I]</span>
+                </button>
 
-              <button
-                onClick={() => setIsScriptModalOpen(true)}
-                className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-sky-400/50 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Code2 className="w-4 h-4 text-sky-400" />
-                <span>Unity C# [C]</span>
-              </button>
+                <button
+                  onClick={() => setIsLevelModalOpen(true)}
+                  className="hidden sm:flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/15 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                  aria-label="Open Levels"
+                >
+                  <Layers className="w-4 h-4 text-sky-400" />
+                  <span className="hidden md:inline">Levels [L]</span>
+                </button>
 
-              <button
-                onClick={() => setGameState(gameState === 'paused' ? 'playing' : 'paused')}
-                className="p-2 text-slate-300 hover:text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-white/10 rounded-lg transition-colors cursor-pointer"
-                aria-label="Pause Game"
-              >
-                <Pause className="w-4 h-4" />
-              </button>
+                <button
+                  onClick={() => setIsSettingsModalOpen(true)}
+                  className="flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-emerald-400/40 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                  aria-label="Open Calibration & Settings"
+                >
+                  <Sliders className="w-4 h-4 text-emerald-400" />
+                  <span className="hidden md:inline">Calibration [K]</span>
+                </button>
+
+                <button
+                  onClick={() => setIsScriptModalOpen(true)}
+                  className="hidden sm:flex items-center gap-1.5 p-2 md:px-3.5 md:py-2 text-xs font-semibold text-white bg-[#0B101B]/90 hover:bg-[#162033] border border-sky-400/50 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                  aria-label="Inspect Unity C# Scripts"
+                >
+                  <Code2 className="w-4 h-4 text-sky-400" />
+                  <span className="hidden md:inline">Unity C# [C]</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1036,121 +1121,208 @@ export default function App() {
           </div>
 
           {/* 3. BOTTOM ARROW QUIVER & UTILITY DOCK */}
-          <div
-            className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[min(940px,94vw)] transition-transform duration-200 pointer-events-auto ${
-              isDockCollapsed ? 'translate-y-[calc(100%-28px)]' : 'translate-y-0'
-            }`}
-          >
-            <div className="flex justify-center mb-1">
-              <button
-                onClick={() => setIsDockCollapsed((prev) => !prev)}
-                className="px-3.5 py-1 text-[11px] font-mono font-medium text-slate-300 hover:text-white bg-[#0B101B]/95 border border-white/15 rounded-t-lg cursor-pointer"
-              >
-                {isDockCollapsed ? '▴ Show Quiver & Controls [H]' : '▾ Hide Controls [H]'}
-              </button>
-            </div>
-
-            <div className="bg-[#0B101B]/95 border border-white/15 rounded-xl p-3.5 shadow-2xl">
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
-                {ARROW_TYPE_LIST.map((arr) => {
-                  const isSelected = arr.id === selectedArrowType;
-                  return (
-                    <button
-                      key={arr.id}
-                      onClick={() => handleSelectArrow(arr.id)}
-                      className={`flex flex-col justify-between p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
-                        isSelected
-                          ? 'bg-[#162033] border-sky-400 text-white'
-                          : 'bg-[#070B12] border-white/10 text-slate-300 hover:border-white/25'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1 mb-1">
-                        <span className="inline-flex items-center gap-1.5 text-xs font-bold truncate">
-                          <span
-                            className="w-2.5 h-2.5 rounded-xs shrink-0"
-                            style={{ backgroundColor: arr.primaryHex }}
-                          />
-                          <span className="truncate">{arr.name}</span>
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-400 shrink-0">
-                          [{arr.hotkey}]
-                        </span>
-                      </div>
-
-                      <div className="text-[11px] text-slate-400 truncate mb-1">
-                        {arr.shortTag}
-                      </div>
-
-                      <div className="flex items-center justify-between text-[10px] font-mono text-slate-300 tabular-nums pt-1 border-t border-white/5">
-                        <span>{arr.baseDamage} DMG</span>
-                        <span>{arr.muzzleVelocity} m/s</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2.5 border-t border-white/10 text-xs">
-                <div className="flex flex-wrap items-center gap-2 font-mono text-slate-300 tabular-nums">
-                  <span className="font-semibold" style={{ color: activeArrowCfg.primaryHex }}>
-                    {activeArrowCfg.name}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>{activeArrowCfg.specialAbilityLabel}</span>
-                </div>
-
-                <div className="flex items-center gap-2">
+          {mobileControlsActive ? (
+            /* Mobile-Ergonomic Compact Quiver Bar: above thumbs in portrait, centered between thumbs in landscape */
+            <div className="fixed bottom-[154px] sm:bottom-3 left-1/2 -translate-x-1/2 z-20 w-[min(420px,calc(100vw-20px))] sm:w-[min(320px,calc(100vw-330px))] md:w-[min(390px,calc(100vw-370px))] pointer-events-auto">
+              {showMobileTools && (
+                <div className="mb-1.5 flex items-center justify-center gap-1.5 bg-[#0B101B]/95 border border-white/15 rounded-lg p-1.5 shadow-xl">
                   <button
                     onClick={() => setShowTrajectoryArc((prev) => !prev)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 bg-[#070B12] border border-white/10 rounded-md cursor-pointer"
                   >
-                    {showTrajectoryArc ? (
-                      <>
-                        <Eye className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Arc On</span>
-                      </>
-                    ) : (
-                      <>
-                        <EyeOff className="w-3.5 h-3.5 text-slate-400" />
-                        <span>Arc Off</span>
-                      </>
-                    )}
+                    {showTrajectoryArc ? <Eye className="w-3.5 h-3.5 text-sky-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+                    <span>{showTrajectoryArc ? 'Arc On' : 'Arc Off'}</span>
                   </button>
-
                   <button
                     onClick={handleCycleWind}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 bg-[#070B12] border border-white/10 rounded-md cursor-pointer"
                   >
                     <Compass className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Shift Wind</span>
+                    <span>Wind {windSpeedX === 0 ? '0' : windSpeedX.toFixed(1)}</span>
                   </button>
-
                   <button
                     onClick={() => startLevel(currentLevel, true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-slate-200 bg-[#070B12] border border-white/10 rounded-md cursor-pointer"
                   >
                     <RotateCcw className="w-3.5 h-3.5 text-slate-300" />
                     <span>Restart</span>
                   </button>
-
                   <button
                     onClick={handleToggleMute}
-                    className="p-1.5 text-slate-300 hover:text-white bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer"
+                    className="p-1.5 text-slate-200 bg-[#070B12] border border-white/10 rounded-md cursor-pointer"
                     aria-label={isMuted ? 'Unmute Audio' : 'Mute Audio'}
                   >
-                    {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                    {isMuted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
                   </button>
+                </div>
+              )}
+
+              <div className="bg-[#0B101B]/90 border border-white/15 rounded-xl p-1.5 shadow-xl flex items-center gap-1">
+                <div className="grid grid-cols-5 gap-1 flex-1 min-w-0">
+                  {ARROW_TYPE_LIST.map((arr) => {
+                    const isSelected = arr.id === selectedArrowType;
+                    const shortLabel = arr.name.split(' ')[0];
+                    return (
+                      <button
+                        key={arr.id}
+                        onClick={() => handleSelectArrow(arr.id)}
+                        className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-lg border transition-colors cursor-pointer min-w-0 ${
+                          isSelected
+                            ? 'bg-[#162033] border-sky-400 text-white'
+                            : 'bg-[#070B12]/90 border-white/10 text-slate-400'
+                        }`}
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-xs mb-0.5 shrink-0"
+                          style={{ backgroundColor: arr.primaryHex }}
+                        />
+                        <span className="text-[10px] font-mono font-bold truncate w-full text-center">
+                          {shortLabel}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  onClick={() => setShowMobileTools((prev) => !prev)}
+                  className={`px-2 py-2 rounded-lg border text-[10px] font-mono font-bold shrink-0 cursor-pointer ${
+                    showMobileTools
+                      ? 'bg-sky-400 text-slate-950 border-sky-400'
+                      : 'bg-[#070B12] text-slate-300 border-white/10'
+                  }`}
+                  aria-label="Toggle Range Tools"
+                >
+                  <Sliders className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[min(940px,94vw)] transition-transform duration-200 pointer-events-auto ${
+                isDockCollapsed ? 'translate-y-[calc(100%-28px)]' : 'translate-y-0'
+              }`}
+            >
+              <div className="flex justify-center mb-1">
+                <button
+                  onClick={() => setIsDockCollapsed((prev) => !prev)}
+                  className="px-3.5 py-1 text-[11px] font-mono font-medium text-slate-300 hover:text-white bg-[#0B101B]/95 border border-white/15 rounded-t-lg cursor-pointer"
+                >
+                  {isDockCollapsed ? '▴ Show Quiver & Controls [H]' : '▾ Hide Controls [H]'}
+                </button>
+              </div>
+
+              <div className="bg-[#0B101B]/95 border border-white/15 rounded-xl p-3.5 shadow-2xl">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
+                  {ARROW_TYPE_LIST.map((arr) => {
+                    const isSelected = arr.id === selectedArrowType;
+                    return (
+                      <button
+                        key={arr.id}
+                        onClick={() => handleSelectArrow(arr.id)}
+                        className={`flex flex-col justify-between p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#162033] border-sky-400 text-white'
+                            : 'bg-[#070B12] border-white/10 text-slate-300 hover:border-white/25'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1 mb-1">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-bold truncate">
+                            <span
+                              className="w-2.5 h-2.5 rounded-xs shrink-0"
+                              style={{ backgroundColor: arr.primaryHex }}
+                            />
+                            <span className="truncate">{arr.name}</span>
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                            [{arr.hotkey}]
+                          </span>
+                        </div>
+
+                        <div className="text-[11px] text-slate-400 truncate mb-1">
+                          {arr.shortTag}
+                        </div>
+
+                        <div className="flex items-center justify-between text-[10px] font-mono text-slate-300 tabular-nums pt-1 border-t border-white/5">
+                          <span>{arr.baseDamage} DMG</span>
+                          <span>{arr.muzzleVelocity} m/s</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2.5 border-t border-white/10 text-xs">
+                  <div className="flex flex-wrap items-center gap-2 font-mono text-slate-300 tabular-nums">
+                    <span className="font-semibold" style={{ color: activeArrowCfg.primaryHex }}>
+                      {activeArrowCfg.name}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span>{activeArrowCfg.specialAbilityLabel}</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setShowTrajectoryArc((prev) => !prev)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      {showTrajectoryArc ? (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-sky-400" />
+                          <span>Arc On</span>
+                        </>
+                      ) : (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Arc Off</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={handleCycleWind}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <Compass className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Shift Wind</span>
+                    </button>
+
+                    <button
+                      onClick={() => startLevel(currentLevel, true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-slate-300" />
+                      <span>Restart</span>
+                    </button>
+
+                    <button
+                      onClick={handleToggleMute}
+                      className="p-1.5 text-slate-300 hover:text-white bg-[#070B12] hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer"
+                      aria-label={isMuted ? 'Unmute Audio' : 'Mute Audio'}
+                    >
+                      {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {/* 3B. MULTI-TOUCH MOBILE CONTROLS OVERLAY */}
+          <MobileControlsOverlay
+            visible={gameState === 'playing' && !anyModalOpen && mobileControlsActive}
+            drawPercent={telemetry.drawPercent}
+            arrowPrimaryHex={activeArrowCfg.primaryHex}
+            isCrouched={isCrouchedState}
+            mobileInputRef={mobileInputRef}
+            mobileBridgeRef={mobileBridgeRef}
+          />
         </>
       )}
 
       {/* 4. PAUSE MODAL */}
       {gameState === 'paused' && !anyModalOpen && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center p-6 bg-black/75 pointer-events-auto">
-          <div className="w-full max-w-md bg-[#0B101B] border border-white/15 rounded-xl p-6 shadow-2xl">
+        <div className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-6 bg-black/75 pointer-events-auto">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto bg-[#0B101B] border border-white/15 rounded-xl p-5 sm:p-6 shadow-2xl">
             <h2 className="text-2xl font-bold text-white font-display mb-1">
               Simulation Paused
             </h2>
@@ -1213,7 +1385,7 @@ export default function App() {
                 onClick={() => setIsScriptModalOpen(true)}
                 className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-[#162033] hover:bg-slate-800 border border-sky-400/40 rounded-lg transition-colors cursor-pointer"
               >
-                Inspect Unity C# Scripts (25 Files)
+                Inspect Unity C# Scripts (28 Files)
               </button>
               <button
                 onClick={() => startLevel(currentLevel, true)}
@@ -1234,8 +1406,8 @@ export default function App() {
 
       {/* 4B. LEVEL COMPLETE OVERLAY */}
       {gameState === 'level_complete' && !anyModalOpen && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center p-6 bg-black/75 pointer-events-auto">
-          <div className="w-full max-w-md bg-[#0B101B] border border-emerald-400/35 rounded-xl p-6 shadow-2xl text-center">
+        <div className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-6 bg-black/75 pointer-events-auto">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto bg-[#0B101B] border border-emerald-400/35 rounded-xl p-5 sm:p-6 shadow-2xl text-center">
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-emerald-500/15 border border-emerald-400/30 mb-3">
               <Trophy className="w-6 h-6 text-emerald-400" />
             </div>
@@ -1340,8 +1512,8 @@ export default function App() {
 
       {/* 4C. PLAYER DEFEATED OVERLAY */}
       {gameState === 'level_failed' && !anyModalOpen && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center p-6 bg-black/75 pointer-events-auto">
-          <div className="w-full max-w-md bg-[#0B101B] border border-rose-500/40 rounded-xl p-6 shadow-2xl text-center">
+        <div className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-6 bg-black/75 pointer-events-auto">
+          <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto bg-[#0B101B] border border-rose-500/40 rounded-xl p-5 sm:p-6 shadow-2xl text-center">
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rose-500/15 border border-rose-400/30 mb-3">
               <Skull className="w-6 h-6 text-rose-400" />
             </div>

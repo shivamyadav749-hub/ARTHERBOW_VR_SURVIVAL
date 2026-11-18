@@ -42,31 +42,31 @@ export const UnityScriptModal: React.FC<UnityScriptModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-black/80 pointer-events-auto">
-      <div className="w-full max-w-6xl h-[86vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 md:p-8 bg-black/80 pointer-events-auto">
+      <div className="w-full max-w-6xl h-[92dvh] sm:h-[86vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Top Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-[#070B12]">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 sm:px-6 py-3 sm:py-4 border-b border-white/10 bg-[#070B12]">
+          <div className="flex items-center gap-2.5 min-w-0">
             <Code2 className="w-5 h-5 text-sky-400 shrink-0" />
-            <div>
-              <h2 className="text-lg font-bold tracking-tight text-white font-display">
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-lg font-bold tracking-tight text-white font-display truncate">
                 Unity Meta Quest VR C# Architecture & ScriptableObject Suite
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="hidden sm:block text-xs text-slate-400">
                 Meta XR Interaction SDK · Continuous Raycast Ballistics · Polymorphic Arrow Payloads
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => handleCopyCode(activeScript.code, activeScript.id)}
-              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-white/10 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-white/10 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               {copiedId === activeScript.id ? (
                 <>
                   <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Copied {activeScript.fileName}</span>
+                  <span>Copied</span>
                 </>
               ) : (
                 <>
@@ -78,15 +78,15 @@ export const UnityScriptModal: React.FC<UnityScriptModalProps> = ({
 
             <button
               onClick={handleDownloadScript}
-              className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-white/10 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs font-semibold text-slate-100 bg-slate-800 hover:bg-slate-700 border border-white/10 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Download className="w-3.5 h-3.5 text-slate-300" />
-              <span>Download .cs</span>
+              <span className="hidden sm:inline">Download .cs</span>
             </button>
 
             <button
               onClick={onClose}
-              className="p-2 text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer"
+              className="p-1.5 sm:p-2 text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-lg transition-colors cursor-pointer"
               aria-label="Close Unity C# Inspector"
             >
               <X className="w-4 h-4" />
@@ -95,7 +95,7 @@ export const UnityScriptModal: React.FC<UnityScriptModalProps> = ({
         </div>
 
         {/* Script File Selector Tabs */}
-        <div className="flex items-center justify-between px-6 py-2.5 bg-[#0E1525] border-b border-white/10 overflow-x-auto">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-2.5 bg-[#0E1525] border-b border-white/10 overflow-x-auto shrink-0">
           <div className="flex items-center gap-1.5">
             {UNITY_CSHARP_SCRIPTS.map((script) => {
               const isActive = script.id === activeTabId;
@@ -125,10 +125,10 @@ export const UnityScriptModal: React.FC<UnityScriptModalProps> = ({
         </div>
 
         {/* Main Split Body: Left C# Code Editor + Right ScriptableObject Inspector */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-hidden">
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-y-auto lg:overflow-hidden">
           {/* Left 8 Cols: C# Source Code & Implementation Notes */}
-          <div className="lg:col-span-8 flex flex-col min-h-0 border-r border-white/10">
-            <div className="px-6 py-3.5 bg-[#0F172A] border-b border-white/10">
+          <div className="lg:col-span-8 flex flex-col min-h-[48dvh] lg:min-h-0 lg:border-r border-b lg:border-b-0 border-white/10">
+            <div className="px-4 sm:px-6 py-3 sm:py-3.5 bg-[#0F172A] border-b border-white/10">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
                 <span className="text-xs font-mono font-semibold text-sky-400">
                   {activeScript.className}
@@ -147,7 +147,7 @@ export const UnityScriptModal: React.FC<UnityScriptModalProps> = ({
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6 bg-[#070B12] select-text">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-[#070B12] select-text">
               <pre className="text-xs md:text-[13px] leading-relaxed font-mono text-slate-200 overflow-x-auto">
                 <code>{activeScript.code}</code>
               </pre>
@@ -155,7 +155,7 @@ export const UnityScriptModal: React.FC<UnityScriptModalProps> = ({
           </div>
 
           {/* Right 4 Cols: Live ArrowTypeData ScriptableObject Inspector */}
-          <div className="lg:col-span-4 flex flex-col min-h-0 bg-[#0B101B] overflow-y-auto p-5">
+          <div className="lg:col-span-4 flex flex-col min-h-0 bg-[#0B101B] lg:overflow-y-auto p-4 sm:p-5">
             <div className="flex items-center gap-2 mb-3">
               <Sliders className="w-4 h-4 text-sky-400 shrink-0" />
               <h3 className="text-sm font-bold text-white font-display">

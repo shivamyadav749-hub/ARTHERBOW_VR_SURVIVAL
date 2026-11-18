@@ -51,21 +51,21 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
     unlockAllLevels || totalStarsEarned >= viewedSeason.requiredStarsToUnlock;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-black/80 pointer-events-auto">
-      <div className="w-full max-w-5xl max-h-[88vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 md:p-8 bg-black/80 pointer-events-auto">
+      <div className="w-full max-w-5xl max-h-[92dvh] sm:max-h-[88vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-b border-white/10 bg-[#070B12]">
-          <div>
-            <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3.5 sm:py-4 border-b border-white/10 bg-[#070B12]">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
               <Swords className="w-5 h-5 text-sky-400 shrink-0" />
-              <h2 className="text-lg font-bold tracking-tight text-white font-display">
-                5 Seasons · Levels 1–50 Survival Campaign
+              <h2 className="text-base sm:text-lg font-bold tracking-tight text-white font-display">
+                5 Seasons · Levels 1–50
               </h2>
               <span className="text-xs font-mono text-amber-400 bg-amber-400/10 border border-amber-400/25 px-2 py-0.5 rounded tabular-nums">
-                ★ {totalStarsEarned} / 150 Stars
+                ★ {totalStarsEarned} / 150
               </span>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="hidden sm:block text-xs text-slate-400 mt-0.5">
               Earn 3-star HP ratings to unlock new Seasons and face elite shielded Centurions & Javelineers.
             </p>
           </div>
@@ -103,7 +103,7 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
         </div>
 
         {/* 5 Season Tabs with Star Gate Indicators */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 px-6 py-3 bg-[#0E1525] border-b border-white/10">
+        <div className="flex sm:grid sm:grid-cols-5 gap-2 px-4 sm:px-6 py-2.5 sm:py-3 bg-[#0E1525] border-b border-white/10 overflow-x-auto shrink-0">
           {SEASONS.map((season) => {
             const isSelected = season.id === viewedSeason.id;
             const seasonStars = CAMPAIGN_LEVELS.filter((l) => l.seasonId === season.id).reduce(
@@ -115,7 +115,7 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
               <button
                 key={season.id}
                 onClick={() => setViewedSeasonId(season.id)}
-                className={`flex flex-col items-start p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                className={`flex flex-col items-start min-w-[140px] sm:min-w-0 shrink-0 p-2 sm:p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
                   isSelected
                     ? 'bg-[#162033] border-sky-400/70 text-white'
                     : 'bg-[#070B12] border-white/10 text-slate-300 hover:border-white/25'
@@ -150,7 +150,7 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
         </div>
 
         {/* Active Season Banner */}
-        <div className="px-6 py-3 bg-[#0B101B] border-b border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="px-4 sm:px-6 py-2.5 sm:py-3 bg-[#0B101B] border-b border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
           <div className="flex items-center gap-2.5">
             <span
               className="w-2.5 h-2.5 rounded-xs shrink-0"
@@ -159,7 +159,7 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
             <span className="font-bold text-white">
               Season {viewedSeason.id}: {viewedSeason.name}
             </span>
-            <span className="text-slate-400">— {viewedSeason.subtitle}</span>
+            <span className="hidden sm:inline text-slate-400">— {viewedSeason.subtitle}</span>
           </div>
           {!isSeasonStarUnlocked ? (
             <span className="font-mono text-rose-400 font-semibold">
@@ -175,7 +175,7 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
         </div>
 
         {/* 10 Levels Grid */}
-        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 bg-[#070B12]">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 bg-[#070B12]">
           {seasonLevels.map((lvl) => {
             const isUnlocked =
               unlockAllLevels || (isSeasonStarUnlocked && lvl.level <= maxUnlockedLevel);

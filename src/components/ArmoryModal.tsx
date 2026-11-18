@@ -128,24 +128,24 @@ export const ArmoryModal: React.FC<ArmoryModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-black/80 pointer-events-auto">
-      <div className="w-full max-w-5xl max-h-[88vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 md:p-8 bg-black/80 pointer-events-auto">
+      <div className="w-full max-w-5xl max-h-[92dvh] sm:max-h-[88vh] bg-[#0B101B] border border-white/15 rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-b border-white/10 bg-[#070B12]">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3.5 sm:py-4 border-b border-white/10 bg-[#070B12]">
+          <div className="flex items-center gap-2.5 min-w-0">
             <Shield className="w-5 h-5 text-amber-400 shrink-0" />
-            <div>
-              <h2 className="text-lg font-bold tracking-tight text-white font-display">
+            <div className="min-w-0">
+              <h2 className="text-base sm:text-lg font-bold tracking-tight text-white font-display truncate">
                 Ancient Armory · Armor & Helmet Forging
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="hidden sm:block text-xs text-slate-400">
                 Spend Coins earned from surviving waves & critical headshots to upgrade HP, mitigation, and your 3D bow gauntlet trim.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#0B101B] border border-amber-400/35 text-xs font-mono font-bold text-amber-300 tabular-nums">
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-lg bg-[#0B101B] border border-amber-400/35 text-xs font-mono font-bold text-amber-300 tabular-nums">
               <Coins className="w-4 h-4 text-amber-400" />
               <span>{coins.toLocaleString()} Coins</span>
             </div>
@@ -160,25 +160,25 @@ export const ArmoryModal: React.FC<ArmoryModalProps> = ({
         </div>
 
         {/* Equipped Loadout Summary Banner */}
-        <div className="px-6 py-3 bg-[#0E1525] border-b border-white/10 flex flex-wrap items-center justify-between gap-4 text-xs font-mono tabular-nums">
-          <div className="flex flex-wrap items-center gap-4">
+        <div className="px-4 sm:px-6 py-2.5 sm:py-3 bg-[#0E1525] border-b border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs font-mono tabular-nums">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
             <span className="inline-flex items-center gap-1.5 text-emerald-400 font-bold">
-              <Heart className="w-3.5 h-3.5" /> Total Max HP: {stats.maxHp}
+              <Heart className="w-3.5 h-3.5" /> Max HP: {stats.maxHp}
             </span>
             <span className="inline-flex items-center gap-1.5 text-sky-300 font-bold">
-              <Shield className="w-3.5 h-3.5" /> Armor Mitigation: {stats.damageReductionPct}%
+              <Shield className="w-3.5 h-3.5" /> Mitigation: {stats.damageReductionPct}%
             </span>
           </div>
-          <div className="flex items-center gap-2 text-slate-300">
-            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            <span>
-              Equipped: {stats.armor.name} + {stats.helmet.name}
+          <div className="flex items-center gap-1.5 text-slate-300 truncate">
+            <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="truncate">
+              {stats.armor.name} + {stats.helmet.name}
             </span>
           </div>
         </div>
 
         {/* Gear Catalog */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#0B101B]">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 bg-[#0B101B]">
           {renderGearSection('1. Ancient Battle Armor (Cuirass & Gauntlets)', ANCIENT_ARMOR_ITEMS, equippedArmorId)}
           {renderGearSection('2. Ancient Helmets & War Crests', ANCIENT_HELMET_ITEMS, equippedHelmetId)}
         </div>
